@@ -10,8 +10,16 @@ any lines above THIS line.
 
 ------------------ Release History  ---------------------------
 
-8/28/14 Initial Release 1.0 
-
+9/6/14 Initial Release 1.0 
+  - basic functionality - user input of 1 or 2 button code
+  - morse2go code table input from Google docs - support for mcode, scode and pcode
+  - user input of timing values. persistent pcode values saved in usr_parm.csv file on Micro SD
+  - basic checking of user input parmameters (pcode) upper and lower limits, 10% max change limits 
+  - /U undo - removes last timing parameter entered
+  - /D delete - deletes the usr_parm.csv file and reboots. This brings in factory default timings
+  - /L list - list current timing paramters 
+  - TODO: user input of short codes
+  -      user input of short codes
 */
 
 #include <stdlib.h>
@@ -159,10 +167,10 @@ inline int scodes::loadcode(char *str) {
 	char * p1;
         char * p2;
 	char *line[MAXSCODES];
-	char buf1[60];
+	char buf1[200];
 	char typcode[10];
 	char ktok[10];
-	char vtok[80];
+	char vtok[200];
 	int lineno, i; 
 
 	// parse lines 
@@ -178,7 +186,7 @@ inline int scodes::loadcode(char *str) {
 
 		strcpy(buf1, line[i]);
                 memset(ktok, 0, 10);
-                memset(vtok, 0, 80);
+                memset(vtok, 0, 200);
 
 		p1 = strtok(buf1, ",");
 		strcpy(typcode, p1);  // type of code, eg, scode
@@ -227,12 +235,20 @@ inline int scodes:: getcode(char *k, char *v){
 	return (rc);
 }
 
-// -----------  parameter codes -----------------
+// -----------  parameter codes - timing variables -----------------
 inline pcodes::pcodes() {
+  for (int i=0; i < MAXPCODES; i++) {
+    pdo[i] = 0;
+    pda[i] = 0;
+    plt[i] = 0;
+    pcl[i] = 0;
+  }
   cnt = 0; 
 }
 
 // load paramter codes into class
+// input is Google Doc, pcode section
+// push one set of codes onto stack
 inline int pcodes::loadcode(char *str) { 
 	char * p;
 	char * p1;
@@ -243,9 +259,11 @@ inline int pcodes::loadcode(char *str) {
 	char ktok[10];
 	char vtok[10];
 	unsigned val;
+        int len;
 	int lineno, i; 
-
+        
 	// parse lines 
+        cnt = 0; 
 	lineno=0;
 	p = strtok(str, ">>"); 
 	while(p != NULL) {
@@ -265,55 +283,127 @@ inline int pcodes::loadcode(char *str) {
 
 		p1 = strtok(NULL, ",");
 		strcpy(ktok, p1+1);
-                int klen = strlen(ktok);  // key of parameter, eg, "do" 
-                for (int k = 0; k < klen; k++)  // convert to uppercase
-                    ktok[k] = toupper(ktok[k]); 
+                len = strlen(ktok);
+                for (int k = 0; k < len; k++)  // convert to uppercase
+                    ktok[k] = tolower(ktok[k]); 
 	
 		p1 = strtok(NULL, ",");
 		strcpy(vtok, p1);
-
-		strncpy(pkey[cnt], ktok, 9);
                 val = atol(vtok);
-                pval[cnt] = val;
-        	cnt++;
-	}
+
+                if (!strcmp(ktok, "do"))
+                  pdo[cnt] = val;
+                else if (!strcmp(ktok, "da"))
+                  pda[cnt] = val;
+                else if (!strcmp(ktok, "lt"))
+                  plt[cnt] = val;
+                else if (!strcmp(ktok, "cl"))
+                  pcl[cnt] = val;
+        }
+	cnt++;
 }
 
-inline int pcodes::sortcode(){ 
+// load user input paramter codes into class
+// input is microSD card - file USR_PARM.CSV
+inline int pcodes::loadparmcode(char *str) { 
+	char *p, *p1;
+	char *line[MAXPCODES];
+        char buf[BUFPCODE];
+	char buf1[40];
+        char v_str[10];
+	int lineno, i, j; 
+        
+	// parse lines - store data in class
+	lineno=0;
+        strcpy(buf, str);
+	p = strtok(buf, "\n"); 
+	while(p != NULL) {
+	    line[lineno] = p;
+	    lineno++;
+	    p = strtok(NULL, "\n");
+	}
+
+	for (i=0; i< lineno; i++) {
+	  strcpy(buf1, line[i]);
+
+          if (strlen(buf1) > 5) { // ignore blank lines
+	    p1 = strtok(buf1, ",");
+	    strcpy(v_str, p1);
+            pdo[cnt] = atol(v_str);
+          
+	    p1 = strtok(NULL, ",");
+	    strcpy(v_str, p1);
+            pda[cnt] = atol(v_str);
+
+	    p1 = strtok(NULL, ",");
+	    strcpy(v_str, p1);
+            plt[cnt] = atol(v_str);
+
+	    p1 = strtok(NULL, ",");
+	    strcpy(v_str, p1);
+            pcl[cnt] = atol(v_str);
+          
+            cnt++;
+          } 
+        }
 }
 
 // lookup parameter codes
-// send k (key), return v (value)
-inline int pcodes:: getcode(char *k, unsigned *v){ 
-  	int i, rc, lenk, lencode;
-	int fnd = -1;
-        char buf[100];
-        
-        *v = -1; // default - not found	
-        lenk = strlen(k); 
-	for (i=0; i< cnt && fnd < 0; i++) {
-  		if (strncmp(k, pkey[i], lenk) == 0) { // code found
-                        *v = pval[i];
-			fnd = i;
-		}
-	}
-	if (fnd < 0) {
-            Serial.begin(9600);
-            Serial.print("not found: ");
-            Serial.println(k);
-            *v = 0;
-            rc = fnd;
+// return current value of cnt 
+// if mode -1 pop stack, return cnt 
+// if mode -2, return top of stack
+//    mode >= 0 lookup only, return values in v[], \
+// always returna cnt value
+inline int pcodes:: getcode_pop(int mode, unsigned v[]){ 
+  	int i, j, rc;
+
+        // stack is empty - nothing to do -- underflow condition
+        if (cnt == 0)
+          return cnt;
+
+        // pop last element of stack and return 
+        if (mode == -1) {
+          pdo[cnt-1] = 0;
+          pda[cnt-1] = 0;
+          plt[cnt-1] = 0;
+          pcl[cnt-1] = 0;
+          cnt--;
+          return cnt;
         }
-        else
-            rc = fnd;
-	return (rc);
+                    
+        if (mode == -2) 
+          j = cnt -1;
+        else if (mode >= 0 && mode < cnt)
+          j = mode;
+        else j = -1;
+                            
+        if (j >= 0 && j < cnt) {          
+          v[0] = pdo[j];
+          v[1] = pda[j];
+          v[2] = plt[j];
+          v[3] = pcl[j];
+        }
+	return (cnt);
 }
 
+// push
+// add another pcode set to the stack
+inline int pcodes::push(unsigned v[]){ 
+
+  pdo[cnt] = v[0];
+  pda[cnt] = v[1];  
+  plt[cnt] = v[2];  
+  pcl[cnt] = v[3];
+  cnt++;
+}
+ 
 inline int pcodes::clear(){ 
 
     for (int i=0; i < MAXPCODES; i++) {
-         memset(pkey[i], 0, 10);
-         pval[i] = 0;
+         pdo[i] = 0;
+         pda[i] = 0;
+         plt[i] = 0;
+         pcl[i] = 0;
     }
     cnt = 0;
 }

@@ -10,7 +10,16 @@ any lines above THIS line.
 
 ------------------ Release History  ---------------------------
 
-8/28/14 Initial Release 1.0 
+9/6/14 Initial Release 1.0 
+  - basic functionality - user input of 1 or 2 button code
+  - morse2go code table input from Google docs - support for mcode, scode and pcode
+  - user input of timing values. persistent pcode values saved in usr_parm.csv file on Micro SD
+  - basic checking of user input parmameters (pcode) upper and lower limits, 10% max change limits 
+  - /U undo - removes last timing parameter entered
+  - /D delete - deletes the usr_parm.csv file and reboots. This brings in factory default timings
+  - /L list - list current timing paramters 
+  - TODO: user input of short codes
+  -      user input of short codes
 
 */
 
@@ -18,7 +27,7 @@ any lines above THIS line.
 #define MAXCHAR 80
 #define MAXMCODES 200
 #define MAXSCODES 100
-#define MAXPCODES 20
+#define MAXPCODES 25
 #define BUFSZ 3000
 #define BUFMCODE 2000
 #define BUFSCODE 2000
@@ -34,6 +43,7 @@ any lines above THIS line.
 #define MSCL 5000
 #define CODE "CODE.CSV"
 #define USR_PARM "USR_PARM.CSV"
+#define HELLO_FILE "HELLO.TXT"
 
 // bitwise ops
 #define MODE_MORSE 1
@@ -71,13 +81,16 @@ class scodes {
 // parameter codes 
 class pcodes {
 	public:
-	char pkey[MAXPCODES][10];
-	unsigned pval[MAXPCODES];
+	unsigned pdo[MAXPCODES];
+	unsigned pda[MAXPCODES];
+	unsigned plt[MAXPCODES];
+	unsigned pcl[MAXPCODES];
 	int cnt;
         pcodes();
 	int loadcode(char *);
-	int sortcode();
-	int getcode(char *, unsigned *);
+        int loadparmcode(char *);
+	int getcode_pop(int, unsigned[]);
+        int push(unsigned[]);
         int clear();
 };
 

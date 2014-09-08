@@ -22,12 +22,15 @@ any lines above THIS line:   -------------------------------------------------
 
 ------------------ Release History  ---------------------------
 
-8/28/14 Initial Release 1.0 
+9/6/14 Initial Release 1.0 
   - basic functionality - user input of 1 or 2 button code
   - morse2go code table input from Google docs - support for mcode, scode and pcode
   - user input of timing values. persistent pcode values saved in usr_parm.csv file on Micro SD
-  - basic checking of user input parmameters (pcode) upper and lower limits 
-  - TODO: advanved editing of user input parmameters (percentage change limit)
+  - basic checking of user input parmameters (pcode) upper and lower limits, 10% max change limits 
+  - /U undo - removes last timing parameter entered
+  - /D delete - deletes the usr_parm.csv file and reboots. This brings in factory default timings
+  - /L list - list current timing paramters 
+  - TODO: user input of short codes
   -      user input of short codes
 
 */
@@ -38,9 +41,13 @@ any lines above THIS line:   -------------------------------------------------
 #include <StopWatch.h>
 #include "m2g.cpp"
 
-// LCD -- lines can be moved, but change here too
+// MicroSD
 const int chipSelect = 10;
+
+// LCD -- lines can be moved, but change here too
 LiquidCrystal lcd(12, 11, 5, 4, 3, 2);
+
+int resetPin = 6;  // reset pin - 1k resistor goes to RESET pin
 
 // data structure of morse code
 mcodes mcode;
@@ -80,48 +87,17 @@ int SwitchMode;            // value of 1 or 2 button mode switch
 void setup()
 {
   char *p;
-  int i = 0, j = 0, n = 0;
+  int i = 0, j = 0, n = 0, k;
   int mode;
 
-  // input key setup  
-  pinMode(inPin1, INPUT);
-  
-  // Setup LCD size - send out hello message
-  lcd.begin(NCOL, NROW);
-  lcd.cursor();
-  lcd.setCursor(0, 0);
-  lcd.print("Adaptive Design");
-  lcd.setCursor(0, 1);
-  lcd.print("Assoc. & HOSARC");
-  lcd.setCursor(0, 2);
-  lcd.print("m2g - morse2go.org");
-  lcd.setCursor(0, 3);
-  lcd.print("Version 1.0");
-
-  // show the hello message
-  delay(2000);
-  lcd.clear();
-  lcd.home();
-  lcd.setCursor(0, 0);
-
-  word_s.clear();
-  char_s.clear();
-    
   // Open serial communications and wait for port to open:
   Serial.begin(9600);
 
-  // start keyboard emulation
-  Keyboard.begin();
-  
-  // used for LCD
-  pinMode(10, OUTPUT);
+  // input key setup  
+  pinMode(inPin1, INPUT);
 
-  // SwitchMode == HIGH, use 2 button mode, LOW is for 1 button mode
-  readingSwit = digitalRead(inSwit);
-  if (readingSwit == HIGH)
-     SwitchMode = HIGH;
-  else
-     SwitchMode = LOW; 
+  // for Micro SD
+  pinMode(chipSelect, OUTPUT);
 
   // see if the card is present and can be initialized:
   if (!SD.begin(chipSelect)) {
@@ -129,14 +105,56 @@ void setup()
     // don't do anything more:
     return;
   }
+
+  // initialize reset
+  digitalWrite(resetPin, HIGH);
+  delay(20);
+  pinMode(resetPin, OUTPUT);
   
+  k = helloFile(2);
+  
+  // Setup LCD size - send out hello message
+  if (k == 0) {
+    lcd.begin(NCOL, NROW);
+    lcd.cursor();
+    lcd.setCursor(0, 0);
+    lcd.print("Adaptive Design");
+    lcd.setCursor(0, 1);
+    lcd.print("Assoc. & HOSARC");
+    lcd.setCursor(0, 2);
+    lcd.print("m2g - morse2go.org");
+    lcd.setCursor(0, 3);
+    lcd.print("Version 1.0");
+    // show the hello message
+    delay(2000);
+  }
+
+  k = helloFile(0); // delete for next boot
+
+  lcd.clear();
+  lcd.home();
+  lcd.setCursor(0, 0);
+  lcd.print("OK>");
+
+  word_s.clear();
+  char_s.clear();
+    
+  // start keyboard emulation
+  Keyboard.begin();
+  
+  // SwitchMode == HIGH, use 2 button mode, LOW is for 1 button mode
+  readingSwit = digitalRead(inSwit);
+  if (readingSwit == HIGH)
+     SwitchMode = HIGH;
+  else
+     SwitchMode = LOW; 
+
   // load data file from Google Docs copied onto Micro SD
   mode = MODE_MORSE + MODE_SHORT + MODE_PARM; 
   ReadDataFile(CODE, mode);
-  
-  // load user parameter file 
-  mode = MODE_PARM; 
-  ReadDataFile(USR_PARM, mode);
+
+  // load user parameter file if it exists
+  ReadParmFile(USR_PARM);
 
   // setup timing variables
   setup_timing();
@@ -250,18 +268,11 @@ void loop() {
  
  }
  
-  // clear displey - key held > 5 sec
+   // clear displey - key held > 5 sec  -- reset - don't display hello msg
   if (msec_press1 >= ms_cl && bsdone == 0) {
-    prevPin1 = LOW;
-    prevPin2 = LOW;
-    bsdone = 1; // backspace done already
-    shown = 1;
-    outc(1, 0, 0, '\n');  // send newline to the Keyboard
-    lcd.clear();
-    lcd.setCursor(0,0);
-    word_s.clear();
-    char_s.clear(); 
-    for (i=1; i<3; i++) { SW[i].stop(); SW[i].reset(); } // stop and reset end of char, end of word
+    i = helloFile(1); // create hello file - no startup message
+    delay(1000); 
+    digitalWrite(resetPin, LOW);
   }
   
    // nothing pressed for 1 sec -- end of letter
@@ -305,10 +316,24 @@ void loop() {
 
      // pointer to previous word without the slash
      p_pword = pword + 1;
+     
+     // position of = operator, if any
      pos_op = strpos(p_pword, eqop, 2);
 
+     // List function - list current values of parms
+     if (!strcmp(pword, "/L")) 
+        listparm();
+
+     // undo current parm on stack
+     else if (!strcmp(pword, "/U")) 
+        undoparm();
+
+     // undo current parm on stack
+     else if (!strcmp(pword, "/D")) 
+        delparm();
+
     // was this a short code? If so, display message
-    if (pword[0] == ':' && strlen(pword) > 1) {
+    else if (pword[0] == ':' && strlen(pword) > 1) {
         p = pword + (char) 1;
         int lenmesg = scode.getcode(p, smesg);
         if (lenmesg > 0) {
@@ -378,15 +403,14 @@ void ReadDataFile(char *fn, int mode) {
   memset(buf, 0, BUFSZ);
   memset(buf_mcode, 0, BUFMCODE);
   memset(buf_scode, 0, BUFSCODE);
-  memset(buf_pcode, 0, BUFPCODE);
+  memset(buf_pcode, 0, BUFPCODE);      
 
   File dataFile = SD.open(fn);
-
+ 
   if (dataFile) {
        j = (int)dataFile.size();
        dataFile.read(buf, (uint16_t)j);
        dataFile.close();
-    
        if (mode & MODE_MORSE) { 
            filterdata (buf, buf_mcode, "mcode"); 
            mcode.loadcode(buf_mcode);  // load the morse code
@@ -395,7 +419,7 @@ void ReadDataFile(char *fn, int mode) {
            filterdata (buf, buf_scode, "scode"); 
            scode.loadcode(buf_scode);  // load the short code
        }
-       if (mode & MODE_PARM) { 
+       if (mode & MODE_PARM) {
            filterdata (buf, buf_pcode, "pcode");
            pcode.clear(); 
            pcode.loadcode(buf_pcode);  // load the parameter code
@@ -407,6 +431,68 @@ void ReadDataFile(char *fn, int mode) {
       lcd.print(buf);
   }
 }
+
+// read the User Parm File for changes in MC input timing
+//
+void ReadParmFile(char *fn) {
+  int j, len;
+  char buf_pcode[BUFPCODE]; // buffer for pcode data file
+
+  memset(buf_pcode, 0, BUFPCODE);
+
+  File dataFile = SD.open(fn);
+
+  if (dataFile) {
+       j = (int)dataFile.size();
+       dataFile.read(buf_pcode, (uint16_t)j);
+       dataFile.close();
+       pcode.loadparmcode(buf_pcode);
+  }
+}
+
+
+//
+// controls hello message for normal startup vs reset
+// return 0 -- no hello file -- for normal startup with Hello Message
+// return 1 -- file present - use for no hello on reset
+// mode 2 read file and return above codes
+// mode 1 create file with short message
+// mode 0 delete file
+int helloFile(int mode) {
+
+  int rc, j;
+  File dataFile;
+  char buf[100];
+  char buf1[300];
+  
+  memset(buf, 0, 100);
+  
+  // delete file
+  if (mode == 0) {
+    SD.remove(HELLO_FILE);
+    rc = -1;
+  }
+  else if (mode == 1) { 
+    SD.remove(HELLO_FILE);
+    dataFile = SD.open(HELLO_FILE, FILE_WRITE);
+    dataFile.print("Hello, World!");
+    dataFile.close();
+    rc = -1;
+  }
+  else if (mode == 2) {
+    dataFile = SD.open(HELLO_FILE);
+    if (dataFile) {
+       //j = (int)dataFile.size();
+       j = 5;
+       dataFile.read(buf, (uint16_t)j);
+       dataFile.close();
+       rc = 1; // file present
+    }
+    else
+      rc = 0; // no file, normal startup with message
+  }
+  return rc;
+} 
 
 // output to Keyboard, LCD or Serial Terminal
 void outc(int kb, int lc, int ser, char c) {
@@ -521,25 +607,22 @@ int filterdata(char* buf, char* codebuf, char* codetag){
 
 void setup_timing() {
   int rc;
-  unsigned val;
-  char dot[3] = "DO";
-  char da[3] = "DA";
-  char lt[3] = "LT";
-  char cl[3] = "CL";
+  unsigned v[4];
+  char buf[100];
   
   // lookup code file - override defaults if found
-  rc = pcode.getcode(dot, &val);
-  if (rc > -1) ms_do = val;
+  rc = pcode.getcode_pop(-2, v);
 
-  rc = pcode.getcode(da, &val);
-  if (rc > -1) ms_da = val;
+  sprintf(buf, "v[3] is %d", v[3]);
+ Serial.println(buf);
 
-  rc = pcode.getcode(lt, &val);
-  if (rc > -1) ms_lt = val;
+  ms_do = v[0];
+  ms_da = v[1];
+  ms_lt = v[2];
+  ms_cl = v[3];
 
-  rc = pcode.getcode(cl, &val);
-  if (rc > -1) ms_cl = val;
-
+  sprintf(buf, "cl is %d", ms_cl);
+ Serial.println(buf);
 }
 
 // lookup current value of parm code
@@ -561,44 +644,62 @@ int get_parm_code(char *p, unsigned *v) {
 }
 
 // update current value of parm code
-int update_parm_code(char *p, unsigned v) {
-  
-  int i;
+int update_parm_code(char *p, unsigned val) {
+  unsigned v[4];
   int rc = 0;
-  char buf[300];
-  char buf1[50];
-  
+    
+  // update value 
   if (!strcmp(p, "DO"))
-    ms_do = v;
+    ms_do = val;
   else if (!strcmp(p, "DA"))
-    ms_da = v;
+    ms_da = val;
   else if (!strcmp(p, "LI"))
-    ms_lt = v;
+    ms_lt = val;
   else if (!strcmp(p, "CL"))
-    ms_cl = v;
+    ms_cl = val;
   else
     rc = -4; 
   
-  // update user parm file
+  // push new value on stack
   if (!rc) {
-    memset(buf, 0, 300);
+    v[0] = ms_do;
+    v[1] = ms_da;
+    v[2] = ms_lt;
+    v[3] = ms_cl;
+    pcode.push(v);
+    rc = updateUserParmFile();
+  }
+  
+  return rc;
+}  
+
+// update user parm file
+int updateUserParmFile() {
+  int rc = 0, cnt, i, j;
+  unsigned v[4];
+  char buf[BUFPCODE];
+  char buf1[40];
+
+    memset(buf, 0, BUFPCODE);
+
+    cnt = pcode.getcode_pop(-2, v); // get cnt - size of stack
+    
+    memset(buf, 0, BUFPCODE);
     SD.remove(USR_PARM); // delete file in case it exists
+    delay(300);
     File dataFile = SD.open(USR_PARM, FILE_WRITE); 
       if (dataFile) {
-         sprintf(buf1, "pcode,/do,%d,dot time in ms\n", ms_do);
-         strcpy(buf, buf1);  
-         sprintf(buf1, "pcode,/da,%d,dash time in ms\n", ms_da);  
-         strcat(buf, buf1);  
-         sprintf(buf1, "pcode,/lt,%d,next letter timeout in ms\n", ms_lt);  
-         strcat(buf, buf1);  
-         sprintf(buf1, "pcode,/cl,%d,clear screen in ms\n", ms_cl);  
-         strcat(buf, buf1);  
+         for (i=0; i < cnt; i++) {
+            j = pcode.getcode_pop(i, v); // get next element of stack
+            sprintf(buf1, "%d,%d,%d,%d\n", v[0], v[1], v[2], v[3]);
+            strcat(buf, buf1);
+         }
          dataFile.print(buf);
          dataFile.close();
       }
       else
         rc = -5;
-  }
+ 
   return rc;
 }
 
@@ -633,7 +734,7 @@ int chk_parm(char *p_pword, int *Parm_val, int *Parm_new, char *parm){
     char val[20];
     char *p;
     int i, i1, j, rc;
-    unsigned prev_val;
+    unsigned prev_val, ival, ival_upper, ival_lower;
     
     rc = 0;
     *Parm_new = 0;
@@ -655,17 +756,83 @@ int chk_parm(char *p_pword, int *Parm_val, int *Parm_new, char *parm){
     if (!rc && i1 != j)
       rc = -1;
     
+    //range check
     if (!rc) {
-        i = atol(val); 
-        if (i < 50 || i > 10000)
+        ival = atol(val); 
+        if (ival < 20 || ival > 10000)
            rc = -2; 
-        else
-            *Parm_new = i;
+    }
+ 
+    // delta check
+    if (!rc) {
+      ival_upper = prev_val * 1.10;
+      ival_lower = prev_val * .90; 
+      if (ival < ival_lower || ival > ival_upper)
+          rc = -3;
     }
     
-      // TODO do more editing here - percent checks -- rc = -3 
-    
+    if (!rc)
+      *Parm_new = ival;
+    else
+      *Parm_new = 0; 
+      
     return rc;
 }
+
+// /L function
+// show current values of timing parms 
+int listparm(){
+  unsigned v[4];
+  char buf0[NCOL];
+  char buf1[NCOL];
+  int i;
+  
+  i = pcode.getcode_pop(-2, v);
+  sprintf(buf0, "DOT:%d DASH:%d", v[0], v[1]);
+  sprintf(buf1, "LTR:%d CLS: %d", v[2], v[3]);
+
+  lcd.clear();
+  lcd.home();
+  lcd.setCursor(0, 0);
+  lcd.print(buf0);
+  lcd.setCursor(0, 1);
+  lcd.print(buf1);
+}
+
+// /U function
+// undo last parm entered from top of stack
+int undoparm(){
+  int i;
+  unsigned v[4];
+  char buf[50];
+  
+  i = pcode.getcode_pop(-1, v);
+  
+  if (i > 0) { // stack has something on it, save it
+    updateUserParmFile();
+    word_s.push_words("OK");  // push message onto words stack
+    lcd_display(0);     // display 
+  }
+  else if (i == 0) { // stack is empty - delete user file
+    SD.remove(USR_PARM); // delete file if nothing on stack
+    delay(250); 
+    i = helloFile(1); // create hello file - no startup message
+    delay(250); 
+    digitalWrite(resetPin, LOW);
+  }
+}
+
+// /D function
+//  delete user parm file
+int delparm(){
+  int i;
+ 
+  SD.remove(USR_PARM); // delete file if nothing on stack
+  delay(250); 
+  i = helloFile(1); // create hello file - no startup message
+  delay(250); 
+  digitalWrite(resetPin, LOW);
+}
+
 
 
