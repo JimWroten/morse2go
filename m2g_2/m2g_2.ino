@@ -31,10 +31,10 @@ any lines above THIS line:   -------------------------------------------------
   - /D delete - deletes the usr_parm.csv file and reboots. This brings in factory default timings
   - /L list - list current timing paramters 
   - TODO: user input of short codes
-  -      user input of short codes
 
 10/1/13 Release 2.0
-
+  - moved to Arduino Mega 2560 platform with Adafruit 2.8" TFT LCD shield and Micro SD card - reduces assembly complexity
+  - added EMIC 2 text-to-speech module
 
 */
 
@@ -48,7 +48,6 @@ any lines above THIS line:   -------------------------------------------------
 #define TFT_DC 9
 #define TFT_CS 10
 Adafruit_ILI9341 tft = Adafruit_ILI9341(TFT_CS, TFT_DC);
-
 
 // MicroSD
 const int chipSelect = 4;
@@ -101,6 +100,9 @@ int readingSwit;           // the current from the switch
 int SwitchMode;            // value of 1 or 2 button mode switch
 int loopctr = 0;
 
+//declare reset function at address 0
+void(* resetFunc) (void) = 0;
+
 // done once to load classes and setup     
 void setup()
 {
@@ -110,7 +112,7 @@ void setup()
 
   // Open serial communications and wait for port to open:
   Serial.begin(9600);
-
+  
   // Open serial communications for EMIC 2 Text to Speech module
   // Pin18 is TX pin - connect to SIN on EMIC 2
   // Pin19 is RX pin - connect to SOUT on EMIC 2
@@ -136,12 +138,10 @@ void setup()
    
   // setup TFT screen 
   tft.begin();
-  tft.fillScreen(0xFFFF);
   tft.setCursor(0, 0);
   tft.setTextColor(ILI9341_BLACK);  
   tft.setTextSize(2);
   tft.setRotation(1);
-  tft.print("tft starting"); 
 
   // for Micro SD
   pinMode(chipSelect, OUTPUT);
@@ -152,14 +152,8 @@ void setup()
     // don't do anything more:
     return;
   }
-
-  // initialize reset
-  //digitalWrite(resetPin, HIGH);
-  //delay(20);
-  //pinMode(resetPin, OUTPUT);
   
-  //k = helloFile(2);
-  k = 0;
+  k = helloFile(2);
   
   // Setup LCD size - send out hello message
   if (k == 0) {
@@ -179,7 +173,7 @@ void setup()
     k = 1;
   }
 
-  //k = helloFile(0); // delete for next boot
+  k = helloFile(0); // delete for next boot
 
   tft.fillScreen(0xFFFF);
   tft.setCursor(0, 0);
@@ -219,7 +213,8 @@ void loop() {
   long chr;
   int i, j, k;
   int pos_op; // position of operator (eg, = sign)
-  int parm_new; // new value of input parm
+  unsigned parm_new; // new value of input parm
+  unsigned parm_val;
   char inp_ch;
   char pword[SIZPWORD];
   char smesg[MAXSCODE_TXT];
@@ -267,15 +262,10 @@ void loop() {
          char_s.push(2);
        }
        
-       // key press was clear
+       // key press was clear - reboot Arduino
        if (btn1_time >= ms_cl) {
-         char_s.clear();
-         word_s.clear();
-         tft.fillScreen(0xFFFF);
-         tft.setCursor(0, 0);
-         tft.print("OK>");
-         SW[0].reset();
-         btn1_evnt = 0;
+         i = helloFile(0); // delete hello file - show message
+         resetFunc(); //call reset  
          return;
        }
 
@@ -294,15 +284,10 @@ void loop() {
       if (btn1_time < ms_cl)
         char_s.push(1);
 
-      // key press was clear
-      if (btn1_time >= ms_cl){
-        char_s.clear();
-        word_s.clear();
-        tft.fillScreen(0xFFFF);
-        tft.setCursor(0, 0);
-        tft.print("OK>");
-        SW[0].reset();
-        btn1_evnt = 0;
+      // key press was clear - reboot Arduino
+      if (btn1_time >= ms_cl){  
+        i = helloFile(0); // delete hello file - show message
+        resetFunc(); //call reset  
         return;
       }
 
@@ -385,57 +370,59 @@ void loop() {
            speakit = 1;  // always speak short code message
         }
      }
-
      
      // List function - list current values of parms
      else if (!strcmp(pword, "/L")) 
         listparm();
      
-     // todo
      // undo current parm on stack
-     //else if (!strcmp(pword, "/U")) 
-        //undoparm();
+     else if (!strcmp(pword, "/U")) 
+        undoparm();
 
       // todo 
-     // undo current parm on stack
-     //else if (!strcmp(pword, "/D")) 
-        //delparm();
+     // delete user parm file
+     else if (!strcmp(pword, "/D")) 
+        delparm();
         
-    // todo
-    /*    
     else if (pword[0] == '/' && strlen(pword) > 1 && pos_op != -1){
           j = chk_parm(p_pword, &parm_val, &parm_new, parm);
-          if (j == -1) 
-              word_s.push_words("ERR101");  // push message onto words stack
-          else if (j == -2) 
-              word_s.push_words("ERR102"); 
-          else if (j == -3) 
-              word_s.push_words("ERR103"); 
-          else if (j == -6) 
-              word_s.push_words("ERR106"); 
-          if (j < 0) 
-              tft_display(0);     // display 
+          if (j == -1) {
+              //word_s.push_words("ERR101");  // push message onto words stack
+              tft.println(" ERR101 ");
+          }
+          else if (j == -2) {
+              //word_s.push_words("ERR102"); 
+              tft.println(" ERR102 ");
+          }
+          else if (j == -3) {
+              //word_s.push_words("ERR103"); 
+              tft.println(" ERR103 ");
+          }
+          else if (j == -6) {
+              //word_s.push_words("ERR106"); 
+              tft.println(" ERR106 ");
+          }
+          //if (j < 0) 
+              //tft_display(0);     // display 
           if (!j) {  // no error, update param and user file
               int j1 = update_parm_code(parm, parm_new);
               if (j1 == -4) {
-                  word_s.push_words("ERR104");  // push message onto words stack
-                  tft_display(0);     // display 
+                  //word_s.push_words("ERR104");  // push message onto words stack
+                  tft.println(" ERR104 ");
+                  //tft_display(0);     // display 
               }
               else if (j1 == -5) {
                   word_s.push_words("ERR105");  // push message onto words stack
-                  tft_display(0);     // display 
+                  tft.println(" ERR105 ");
+                  //tft_display(0);     // display 
               }
               else {
-                  word_s.push_words("OK");  // push message onto words stack
-                  tft_display(0);     // display 
+                  //word_s.push_words("OK");  // push message onto words stack
+                  tft.println(" OK ");
+                  //tft_display(0);     // display 
               }   
           }
-       }
-     */ 
-     //////////////////////////
-     // end of todo list //////   
-     //////////////////////////
-     
+       } 
    }
    if (speakit) {
       speaklen = word_s.get_words(speaktxt); 
@@ -523,11 +510,13 @@ int helloFile(int mode) {
   
   // delete file
   if (mode == 0) {
-    SD.remove(HELLO_FILE);
+    if (SD.exists(HELLO_FILE))
+      SD.remove(HELLO_FILE);
     rc = -1;
   }
   else if (mode == 1) { 
-    SD.remove(HELLO_FILE);
+    if (SD.exists(HELLO_FILE))
+      SD.remove(HELLO_FILE);
     dataFile = SD.open(HELLO_FILE, FILE_WRITE);
     dataFile.print(F("Hello, World!"));
     dataFile.close();
@@ -698,16 +687,18 @@ int updateUserParmFile() {
   unsigned v[4];
   char buf[BUFPCODE];
   char buf1[40];
-
+  
     memset(buf, 0, BUFPCODE);
 
     cnt = pcode.getcode_pop(-2, v); // get cnt - size of stack
     
     memset(buf, 0, BUFPCODE);
-    SD.remove(USR_PARM); // delete file in case it exists
+    if (SD.exists(USR_PARM))
+      SD.remove(USR_PARM); // delete file in case it exists
     delay(300);
-    File dataFile = SD.open(USR_PARM, FILE_WRITE); 
-      if (dataFile) {
+    File dataFile = SD.open(USR_PARM, FILE_WRITE);
+   
+    if (dataFile) {
          for (i=0; i < cnt; i++) {
             j = pcode.getcode_pop(i, v); // get next element of stack
             sprintf(buf1, "%d,%d,%d,%d\n", v[0], v[1], v[2], v[3]);
@@ -717,7 +708,7 @@ int updateUserParmFile() {
          dataFile.close();
       }
       else
-        rc = -5;
+        rc = -5;        
  
   return rc;
 }
@@ -748,7 +739,7 @@ int strpos(char *hay, int need, int offset) {
 // return -2 if value is out of range
 // return -3 if value is changed too much
 // return value if OK
-int chk_parm(char *p_pword, int *Parm_val, int *Parm_new, char *parm){
+int chk_parm(char *p_pword, unsigned *Parm_val, unsigned *Parm_new, char *parm){
     char buf[40];
     char val[20];
     char *p;
@@ -807,8 +798,8 @@ int listparm(){
   int i;
   
   i = pcode.getcode_pop(-2, v);
-  sprintf(buf0, "DOT:%d DASH:%d", v[0], v[1]);
-  sprintf(buf1, "LTR:%d CLS: %d", v[2], v[3]);
+  sprintf(buf0, "DOT:%u DASH:%u", v[0], v[1]);
+  sprintf(buf1, "LTR:%u CLS: %u", v[2], v[3]);
 
   tft.fillScreen(0xFFFF);
   tft.setCursor(0, 0);
@@ -824,19 +815,22 @@ int undoparm(){
   unsigned v[4];
   char buf[50];
   
+  // pop top code, get number remaining in stack
   i = pcode.getcode_pop(-1, v);
   
   if (i > 0) { // stack has something on it, save it
     updateUserParmFile();
-    word_s.push_words("OK");  // push message onto words stack
-    tft_display(0);     // display 
+    tft.println(" OK ");
+    //word_s.push_words("OK");  // push message onto words stack
+    //tft_display(0);     // display 
   }
   else if (i == 0) { // stack is empty - delete user file
-    SD.remove(USR_PARM); // delete file if nothing on stack
+    if (SD.exists(USR_PARM)) 
+      SD.remove(USR_PARM); // delete file if nothing on stack
     delay(250); 
-    i = helloFile(1); // create hello file - no startup message
+    helloFile(1); // create hello file - no startup message
     delay(250); 
-    digitalWrite(resetPin, LOW);
+    resetFunc(); //call reset  
   }
 }
 
@@ -845,11 +839,12 @@ int undoparm(){
 int delparm(){
   int i;
  
-  SD.remove(USR_PARM); // delete file if nothing on stack
+  if (SD.exists(USR_PARM))
+    SD.remove(USR_PARM); // delete file if nothing on stack
   delay(250); 
-  i = helloFile(1); // create hello file - no startup message
+  helloFile(1); // create hello file - no startup message
   delay(250); 
-  digitalWrite(resetPin, LOW);
+  resetFunc(); //call reset  
 }
 
 // SD Card fgets 
@@ -906,4 +901,6 @@ void ckbtn2() {
     }      
     lastDebounceTime = millis();
 }
+
+
 
