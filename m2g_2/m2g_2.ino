@@ -18,7 +18,8 @@ Commons Attribution-ShareAlike 4.0 International License. For more information
 about this license, see www.creativecommons.org/licenses/by-sa/4.0/ 
 -- Basically, you can use this software for any purpose for free, 
 as long as you say where you got it and that if you modify it, you don't remove
-any lines above THIS line:   -------------------------------------------------
+any lines above THIS line:   
+-------------------------------------------------
 
 ------------------ Release History  ---------------------------
 
@@ -35,7 +36,10 @@ any lines above THIS line:   -------------------------------------------------
 10/1/13 Release 2.0
   - moved to Arduino Mega 2560 platform with Adafruit 2.8" TFT LCD shield and Micro SD card - reduces assembly complexity
   - added EMIC 2 text-to-speech module
-
+  
+  - construction note: Using the Adafruit 2.8" TFT with the Mega 2560 requires soldering closed the three ICSP jumpers, 
+  near the 6 pin jack. See: https://learn.adafruit.com/adafruit-2-8-tft-touch-shield-v2/connecting - search "Using with a Mega".
+  It isn't necessary to cut the small line in between the #11, #12, #13 pads.
 */
 
 #include <Adafruit_GFX.h>    // Core graphics library
@@ -901,6 +905,7 @@ void ckbtn2() {
     }      
     lastDebounceTime = millis();
 }
+
 
 
 
