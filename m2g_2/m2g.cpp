@@ -209,30 +209,23 @@ inline int scodes:: getcode(char *k, char *v){
 }
 
 // -----------  parameter codes - timing variables -----------------
+// constructor
 inline pcodes::pcodes() {
-  for (int i=0; i < MAXPCODES; i++) {
-    pdo[i] = 0;
-    pda[i] = 0;
-    plt[i] = 0;
-    pcl[i] = 0;
-  }
-  cnt = 0; 
+    pvc = -1;
 }
 
 // load paramter codes into class
 // input is Google Doc, pcode section
 // push one set of codes onto stack
 inline int pcodes::loadcode(char *buf) { 
-	char * p;
 	char * p1;
-        char * p2;
 	char buf1[100];
 	char typcode[10];
 	char ktok[10];
 	char vtok[10];
-	unsigned val;
+	int val;
         int len;
-	int lineno, i; 
+        int k;
         
 	strcpy(buf1, buf);
         memset(ktok, 0, 10);
@@ -245,130 +238,43 @@ inline int pcodes::loadcode(char *buf) {
 	strcpy(ktok, p1+1);
 
         len = strlen(ktok);
-        for (int k = 0; k < len; k++)  // convert to uppercase
+        for (k = 0; k < len; k++)  // convert to lowercase
             ktok[k] = tolower(ktok[k]); 
 
 	p1 = strtok(NULL, ",");
 	strcpy(vtok, p1);
-        val = atol(vtok);
+        val = atoi(vtok);
 
-       if (!strcmp(ktok, "do"))
-            pdo[cnt] = val;
-       else if (!strcmp(ktok, "da"))
-            pda[cnt] = val;
-       else if (!strcmp(ktok, "lt"))
-            plt[cnt] = val;
-       else if (!strcmp(ktok, "cl"))
-             pcl[cnt] = val;
-
-      // we should come here for each param. When all are done, increment cnt.
-      if (pdo[cnt] > 50 && pda[cnt] > 50 && plt[cnt] > 50 && pcl[cnt] > 50)
-         cnt++;
+       if (!strcmp(ktok, "vc"))
+             pvc = val;
 }
 
 // load user input paramter codes into class
 // input is microSD card - file USR_PARM.CSV
 inline int pcodes::loadparmcode(char *str) { 
 	char *p, *p1;
-	char *line[MAXPCODES];
         char buf[BUFPCODE];
-	char buf1[40];
         char v_str[10];
 	int lineno, i, j; 
-        
-	// parse lines - store data in class
-	lineno=0;
+
         strcpy(buf, str);
-	p = strtok(buf, "\n"); 
-	while(p != NULL) {
-	    line[lineno] = p;
-	    lineno++;
-	    p = strtok(NULL, "\n");
-	}
-
-	for (i=0; i< lineno; i++) {
-	  strcpy(buf1, line[i]);
-
-          if (strlen(buf1) > 5) { // ignore blank lines
-	    p1 = strtok(buf1, ",");
-	    strcpy(v_str, p1);
-            pdo[cnt] = atol(v_str);
-          
-	    p1 = strtok(NULL, ",");
-	    strcpy(v_str, p1);
-            pda[cnt] = atol(v_str);
-
-	    p1 = strtok(NULL, ",");
-	    strcpy(v_str, p1);
-            plt[cnt] = atol(v_str);
-
-	    p1 = strtok(NULL, ",");
-	    strcpy(v_str, p1);
-            pcl[cnt] = atol(v_str);
-          
-            cnt++;
-          } 
-        }
+	p1 = strtok(buf, ",");
+	strcpy(v_str, p1);
+        pvc = atoi(v_str);          
 }
 
-// lookup parameter codes
-// return current value of cnt 
-// if mode -1 pop stack, return cnt 
-// if mode -2, return top of stack
-//    mode >= 0 lookup only, return values in v[], \
-// always returna cnt value
-inline int pcodes:: getcode_pop(int mode, unsigned *v){ 
-  	int i, j, rc;
-
-       // stack is empty - nothing to do -- underflow condition
-        if (cnt == 0)
-          return cnt;
-
-        // pop last element of stack and return 
-        if (mode == -1) {
-          pdo[cnt-1] = 0;
-          pda[cnt-1] = 0;
-          plt[cnt-1] = 0;
-          pcl[cnt-1] = 0;
-          cnt--;
-          return cnt;
-        }
-                    
-        if (mode == -2) 
-          j = cnt -1;
-        else if (mode >= 0 && mode < cnt)
-          j = mode;
-        else j = -1;
-                            
-        if (j >= 0 && j < cnt) {          
-          v[0] = pdo[j];
-          v[1] = pda[j];
-          v[2] = plt[j];
-          v[3] = pcl[j];
-        }
-	return (cnt);
+// put new values of parm codes into struct
+inline int pcodes::putcode(int *v) {
+    pvc = v[0];
 }
 
-// push
-// add another pcode set to the stack
-inline int pcodes::push(unsigned v[]){ 
-
-  pdo[cnt] = v[0];
-  pda[cnt] = v[1];  
-  plt[cnt] = v[2];  
-  pcl[cnt] = v[3];
-  cnt++;
+// lookup parameter codes that exist in struct
+inline int pcodes::getcode(int *v){                
+        v[0] = pvc;
 }
  
 inline int pcodes::clear(){ 
-
-    for (int i=0; i < MAXPCODES; i++) {
-         pdo[i] = 0;
-         pda[i] = 0;
-         plt[i] = 0;
-         pcl[i] = 0;
-    }
-    cnt = 0;
+       pvc = 0;
 }
 
 
@@ -386,7 +292,12 @@ inline int char_stk::clear() {
 
 inline int char_stk::push(int c) {
   if (ptr < MAXDD)
-    ditdah[ptr++] = c;    
+    ditdah[ptr++] = c;
+  return ptr;    
+}
+
+inline int char_stk::size() {
+    return ptr; 
 }
 
 inline int char_stk::pop() {
@@ -397,12 +308,15 @@ inline int char_stk::pop() {
 }
 
 // get value of character, eg, 12 or 2112
-inline long char_stk::get_charval() {
+// returns value of ptr, ditdah[] (n and dd)
+inline long char_stk::get_charval(int &n, int *dd) {
   long mult = 1;
   int i;
   long ch = 0;
   
+  n = ptr; 
   for (i = ptr-1; i > -1; i--) {
+    dd[i] = ditdah[i];
     ch = ch + (ditdah[i] * mult);
     mult = mult * 10;
   }
@@ -424,11 +338,12 @@ inline int word_stk::clear() {
 
 // push a word into word stack
 inline int word_stk::push(char c) {
-  if (c == ' ') 
-    prev_ptr = ptr; // save prev_ptr to look at space
+  //if (c == ' ') 
+  //  prev_ptr = ptr; // save prev_ptr to look at space
   words[ptr] = c;
   if (ptr < MAXWORD_TXT-1)
     ptr++;
+  return ptr; 
 }
 
 // push several words into word stack
@@ -452,10 +367,11 @@ inline int word_stk::nextword() {
 
 // -- backspace -- 
 // pop the last character in the word stack
+// return character pop'd
 inline int word_stk::pop() {
   int done = 0;  // break flag
   int ptr1;
-  char buf[25];
+  char buf[25], c;
   int i, len;
 
   if (DEBUG) {
@@ -468,6 +384,7 @@ inline int word_stk::pop() {
   // erase char
   if (ptr > 0) {
     ptr--;
+    c = words[ptr];
     words[ptr] = 0;
   }
   if (ptr == 0) 
@@ -475,22 +392,24 @@ inline int word_stk::pop() {
     
   if (DEBUG) {
     // after
-    Serial.println("\n-- before --");
+    Serial.println("\n-- after --");
     sprintf(buf, "%d: %s", ptr, words);
     Serial.println (buf); 
   } 
+  return (int) c; 
 }
 
 // get words = return length of words
 inline int word_stk::get_words(char * w) {
+    int i, j; 
     memset(w, 0, MAXWORD_TXT);
-    strncpy(w, words, MAXWORD_TXT - 1);
+    strncpy(w, words, MAXWORD_TXT);
     return(strlen(w));
 }
 
 /// save value of ptr
 inline int word_stk::save_ptr(int i) {
-    //prev_ptr = ptr + i;
+    prev_ptr = ptr + i;
 }
 
 // get value of ptr (i==o) or prev_ptr i < 0)
@@ -517,6 +436,13 @@ inline int word_stk::get_pword(char* pwrd) {
   p = words + j;
   if (len > (SIZPWORD-1)) len = SIZPWORD -1; 
   strncpy(pwrd, p, len);
+  i = strlen(pwrd);
+  for (j=i; j >= 0; j--) {
+    if (pwrd[j] == ' ') {
+        pwrd[j] = 0;
+        j = -1;
+    }
+  }
 }
 
 // trim lenght of words stack

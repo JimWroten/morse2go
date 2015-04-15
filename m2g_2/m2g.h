@@ -23,29 +23,27 @@ any lines above THIS line.
 
 */
 
-#define MAXDD 20
+#define MAXDD 6
 #define MAXSCODE_TXT 80
-#define MAXWORD_TXT 160
+#define MAXWORD_TXT 115
 #define MAXMCODES 60
 #define MAXSCODES 40
-#define MAXPCODES 5
+#define NPARMS 6
 #define BUFSZ 2300
 #define BUFMCODE 1000
 #define BUFSCODE 1200
 #define BUFPCODE 100
 #define SIZPWORD 20
 #define SIZMESG 100
-#define NCOL 20
-#define NROW 4
+#define NCOL 19
 #define DEBUG 0
-#define MSDO 225
-#define MSDA 1000
-#define MSLT 2000
-#define MSCL 5000
+#define PRVC 0
+#define PRFN 3
 #define CODE "CODE.CSV"
 #define USR_PARM "USR_PARM.CSV"
-#define HELLO_FILE "HELLO.TXT"
 #define DEBOUNCEDELAY 50 
+#define BUFFPIXEL 20
+
 
 // bitwise ops
 #define MODE_MORSE 1
@@ -83,16 +81,12 @@ class scodes {
 // parameter codes 
 class pcodes {
 	public:
-	unsigned pdo[MAXPCODES];
-	unsigned pda[MAXPCODES];
-	unsigned plt[MAXPCODES];
-	unsigned pcl[MAXPCODES];
-	int cnt;
+	int pvc;  // voice code
         pcodes();
 	int loadcode(char *);
         int loadparmcode(char *);
-	int getcode_pop(int, unsigned *);
-        int push(unsigned *);
+        int putcode(int *);
+	int getcode(int *);
         int clear();
 };
 
@@ -105,13 +99,14 @@ class char_stk {
     int push(int); // push a ditdah  
     int pop(); // pop last ditdah
     int clear(); // clear stack
-    long get_charval(); // get character value, eg, 12 or 2121
+    int size(); // get value of ptr
+    long get_charval(int &, int *); // return character value, eg, 12 or 2121, value of ptr and ditdah array
 };
 
 // word class -- stack of characters and spaces
 class word_stk {
    public:
-     char words[MAXWORD_TXT]; // word stack [characters]
+     char words[MAXWORD_TXT + 1]; // word stack [characters]
      int ptr; // pointer to next char to be added - also the length
      int prev_ptr; // pointer to prev value of ptr, when it was a space -- used to find last token
      word_stk();
