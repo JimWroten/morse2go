@@ -192,26 +192,26 @@ inline int scodes::sortcode(){
 }
 
 // send k (key), return v (value)
-inline int scodes:: getcode(char *k, char *v){ 
-  	int i, rc, lenk, lencode;
+inline int scodes::getcode(char *k, char *v){ 
+  int i, rc, lenk, lencode;
 	int fnd = -1;
-        char buf[100];
+  char buf[100];
         	
 	for (i=0; i< cnt && fnd < 0; i++) {
-		if (strcmp(k, skey[i]) == 0) { // code found
-			strcpy(v, sval[i]);
-			fnd = i;
-		}
+		  if (strcmp(k, skey[i]) == 0) { // code found
+			    strcpy(v, sval[i]);
+			    fnd = i;
+		  }
 	}
 	if (fnd < 0) {
-            Serial.begin(9600);
-            Serial.print("not found: ");
-            Serial.println(k);
+      Serial.begin(9600);
+      Serial.print("not found: ");
+      Serial.println(k);
 	    strcpy(v, "?");
-            rc = fnd;
-        }
-        else
-            rc = strlen(v);
+         rc = fnd;
+  }
+      else
+         rc = strlen(v);
 	return (rc);
 }
 
@@ -339,39 +339,16 @@ inline word_stk::word_stk() {
 // clear class
 inline int word_stk::clear() {
   int i;
-  memset(words, 0, MAXWORD_TXT);
+  memset(words, 0, MAXWORD);
   ptr = 0; 
-  prev_ptr = -1;
-  prev_fmt = 0; 
 }
 
 // push a character onto the word stack
 inline int word_stk::push(char c) {
   words[ptr] = c;
-  if (ptr < MAXWORD_TXT-1)
+  if (ptr < MAXWORD)
     ptr++;
   return ptr; 
-}
-
-// push several words into word stack
-inline int word_stk::push_words(char* str) {
-  int len;
-  
-  len = strlen(str); 
-  if (len > MAXWORD_TXT)
-      len = MAXWORD_TXT;
-  memset(words, 0, MAXWORD_TXT+1); 
-  strncpy(words, str, len);
-  ptr = strlen(words);
-  prev_ptr = ptr;
-}
-
-// current word finished - go to next word
-inline int word_stk::nextword() {
-    if (ptr < MAXWORD_TXT -2) {
-        words[ptr] = ' ';
-        ptr++;
-    }
 }
 
 // -- backspace -- 
@@ -382,13 +359,6 @@ inline int word_stk::pop() {
   int ptr1;
   char buf[25], c;
   int i, len;
-
-  if (DEBUG) {
-    // before
-    Serial.println("\n-- before --");
-    sprintf(buf, "%d: %s", ptr, words);
-    Serial.println (buf); 
-  }
   
   // erase char
   if (ptr > 0) {
@@ -399,52 +369,26 @@ inline int word_stk::pop() {
   if (ptr == 0) 
     clear();
     
-  if (DEBUG) {
-    // after
-    Serial.println("\n-- after --");
-    sprintf(buf, "%d: %s", ptr, words);
-    Serial.println (buf); 
-  } 
   return (int) c; 
 }
 
-// get words = return length of words
-inline int word_stk::get_words(char * w) {
-    int i, j; 
-    memset(w, 0, MAXWORD_TXT+1);
-    strcpy(w, words);
-    return(strlen(w));
-}
-
-/// save value of ptr
-inline int word_stk::save_ptr(int i) {
-    prev_ptr = ptr + i;
-}
-
-/// update value of ptr
-inline int word_stk::update_ptr(int i) {
-    ptr = i;
-}
-
 // get value of ptr (i==o) or prev_ptr i < 0)
-inline int word_stk::get_ptr(int i) {
-    if (i < 0)
-      return prev_ptr;
-    else
+inline int word_stk::get_ptr() {
       return ptr;
 }
 
 // get value of previous word
 inline int word_stk::get_pword(char* pwrd) {
-  const char s[2] = " ";
-  char *tok, *p;
-  char buf[MAXWORD_TXT + 1];
-  char buf1[5]; 
-  int i; 
 
-  if (ptr == 0) 
-    return 0;
-
+  if (ptr == 0) {
+     memset(pwrd, 0, SIZPWORD); 
+     return 0;
+  }
+  strcpy(pwrd, words); 
+  int i = strlen(pwrd);   
+  return i; 
+  
+  /*
   memset(buf1, 0, 5);
   strncpy(buf1, words, 3); 
   p = words; 
@@ -460,31 +404,57 @@ inline int word_stk::get_pword(char* pwrd) {
      tok = strtok(NULL, s);
   }
   i = strlen(pwrd);   
-  return i; 
+  return i;
+  */ 
 }
 
-// trim length of words stack
-inline int word_stk::trim_words() {
-  char buf2[MAXWORD_TXT];
-  int i, i1, j;
-  memset(buf2, 0, MAXWORD_TXT);
-
-  for (j = 20; words[j] == ' ' && j < MAXSCODE_TXT; j++) ; // skip to a space at least 20 chars from left 
-  for (i1 = j, i=0; words[i1] > 0 && i1 < MAXSCODE_TXT; i1++, i++)
-      buf2[i] = words[i1];
-  memset(words, 0, MAXWORD_TXT);
-  strcpy(words, buf2);
- 
-  i = strlen(words);
-  ptr = prev_ptr = i; // not sure about this.
+// ----------- Message functions ---------------
+inline message_stk::message_stk() {
+  msg = (char **)malloc(MAXWORDS * sizeof(char *));
+  ptr = 0; 
 }
 
-// save of get prev_fmt value
-// if parameter i == 0, only get value
-inline int word_stk::save_prev_fmt(int i) {
-
-  if (i) 
-      prev_fmt = i; 
-  return prev_fmt;
+// clear stack 
+inline int message_stk::clear() {
+   int i; 
+   for (i=0; i< ptr; i++)
+       free(msg[i]); 
+   ptr = 0; 
 }
 
+// push a word to the stack 
+inline int message_stk::push(char* wrd) {
+    int i; 
+
+    // if stack full, return with no action
+    if (ptr > MAXWORDS-1) 
+        return ptr;
+        
+    i = strlen(wrd); 
+    msg[ptr] = (char *)malloc(i + 1);
+    strcpy(msg[ptr], wrd);
+    ptr++;
+    return ptr; 
+}
+
+// pop a word from the stack
+inline int message_stk::pop(char* wrd) {
+   ptr--;
+   free(msg[ptr]); 
+   return ptr; 
+}
+
+// get word n from the stack 
+inline int message_stk::get_msg(int n, char *wrd) {
+   if (n >= 0 && n < ptr) 
+       strcpy(wrd, msg[n]); 
+   else
+       strcpy(wrd, msg[ptr-1]); 
+
+   return n;
+}
+
+// get ptr  
+inline int message_stk::get_ptr() {
+   return ptr;
+} 

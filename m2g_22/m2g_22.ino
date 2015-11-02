@@ -11,10 +11,9 @@ Morse Code patterns and user defined abbreviations are stored on a micro SD card
 so that code modifications can be made without changing program code.
 
 Developed jointly by Adaptive Design Association, NYC (www.adaptivedesign.org),
-Hall of Science Amateur Radio Club (www.hosarc.org),
 and Jim Wroten, Technical Consultant (www.jimwroten.nyc).
 
-This work is licensed 2014 by Jim Wroten (www.jimwroten.nyc) under a Creative
+This work is licensed 2015 by Jim Wroten (www.jimwroten.nyc) under a Creative
 Commons Attribution-ShareAlike 4.0 International License. For more information
 about this license, see www.creativecommons.org/licenses/by-sa/4.0/
 -- Basically, you can use this software for any purpose for free,
@@ -48,12 +47,15 @@ any lines above THIS line:
   -   enter key - press to accept last entry in buffer. If there is no last entry, insert space, third space - say it
   -   delete key - press to delete current buffer. If buffer is empty, delete last character on screen, third delete clear screen
 
-10/10/15 Release 2.s
+11/10/15 Release 2.2
   - Two Button and Four Button modes - a long press of button 1 is the same as a button 3 press. Long press of button 2 
     is the same as button 4. 
   - Added codes for space (..--), backspace (----), speak (.---.), and clear (.._..). These are defined on code.csv
   - Formatted the TFT screen when words wrap
-
+  - Moved Word Work Area to fifth line of TFT, separating it from the message area (lines 1 - 4). This simplifies the software
+    design and gives the user more focus on the bottom three lines of the display. 
+  - Added Long Press user control. By entering one of 13 codes (:L3 to :L9 and :LA to :LF) user can vary the lenght of a long press from 
+    0.3 seconds to 1.5 seconds, respectively. This new value is saved for the next reboot. 
 */
 
 #include <Adafruit_GFX.h>    // Core graphics library
@@ -86,6 +88,9 @@ char_stk char_s;
 
 // data structure of word stack
 word_stk word_s;
+
+// data structure of message stack
+message_stk message_s;
 
 // stopwatch -- used to time switch press
 StopWatch SW;
@@ -134,6 +139,7 @@ int pr_fn = PRFN;
 
 // EEPROM data
 int eeAdr = 0;
+EEPromData EEp;
 
 int inp_ch = -1;
 
@@ -143,8 +149,9 @@ void setup()
   char *p;
   int i = 0, j = 0, n = 0, k, r, c;
   int mode;
-  char buf[20];
+  char buf[20], buf1[20];
   int v[NPARMS];
+  float f_longPress;
 
   // Open serial communications and wait for port to open:
   Serial.begin(9600);
@@ -163,12 +170,11 @@ void setup()
   Serial1.flush();                 // Flush the receive buffer
 
   // read EEPROM data
-  EEPromData EEp;
   EEPROM.get(eeAdr, EEp);
   LongPress3 = 0;
 
   // initialize first time - set to reasonable default values
-  if (EEp.msLongPress < LONGPRESS || EEp.msLongPress > 3000) {
+  if (EEp.msLongPress < 300 || EEp.msLongPress > 1500) {
     EEp.msLongPress = LONGPRESS;
     memset(EEp.filler, 0, sizeof(EEp.filler));
     EEPROM.put(eeAdr, EEp);
@@ -221,29 +227,41 @@ void setup()
   tft.setRotation(1);
   bmpDraw("m2g.bmp", 0, 0);
   delay(2000);
+  
   tft.fillScreen(0xFFFF);
   setcursor(1, -1, 4, 4, &c, &r);
-  tft.setTextColor(ILI9341_BLACK);
   tft.print(F("M2G Version 2.2"));
   delay(1000);
+
+  f_longPress = (float)LongPress / 1000.0;
+  dtostrf(f_longPress, 3, 1, buf1);
+  sprintf(buf, "Long Press %s Sec.", buf1); 
+  tft.fillScreen(0xFFFF);
+  setcursor(1, -1, 2, 4, &c, &r);
+  tft.print(buf);
+  delay(1000);
+  
   Serial1.print("S M 2 G Version 2.2\n");
   tft.setTextSize(pr_fn);  // font param
   cls(0);
   show_labels(0, 0);
+
 }
 
 // repeat this forever, checking for a keypress or key release event
 void loop() {
 
-  char buf[MAXWORD_TXT + 20];
+  char buf[SIZMESG], buf1[MAXWORD];
   unsigned long timebtn1, timebtn2, timebtn3, timebtn4;
-  int Btn1, Btn2, Btn3, Btn4, PushCode, clen, lenmesg, CurRow1, CurRow2, ptr, isedge, ReFmt;
+  int Btn1, Btn2, Btn3, Btn4, PushCode, clen, lenmesg, CurRow1, ptr, valLP ;
   int speakit, speaklen, new_word, csize, lenpword;
   char speaktxt[MAXWORD_TXT];
   char pword[SIZPWORD];
   char smesg[SIZMESG];
-  char *p;
+  char *pword1, *tok;
   static int PrvRow;
+  static char s[2] = " ";
+  float f_longPress;
 
   // check button status
   readingPin1 = digitalRead(inPin1);
@@ -304,17 +322,8 @@ void loop() {
       SW.stop();
       if (timebtn3 > LongPress && LongPress3 == 0) {
         LongPress3 = 1;
-        //sprintf(buf, "S Long Press is now %d milli seconds. Hold button three for the duration of the long press. Click any key to cancel", LongPress);
-        //Serial1.println(buf);
-        //Serial1.flush();
       }
       else if (timebtn3 > LongPress && LongPress3 == 1) {
-        //sprintf(buf, "S Long Press duration is now %d milliseconds", timebtn3);
-        //Serial1.println(buf);
-        //Serial1.flush();
-
-        // Change EEprom here
-
         LongPress3 = 0;
       }
       else {
@@ -322,10 +331,6 @@ void loop() {
         LongPress3 = 0;
       }
     }
-
-    // to do next
-    //UserMsg(0, 5000);
-
   }
 
   // button 4 Released
@@ -342,8 +347,8 @@ void loop() {
   // dit or dah pressed - show results at bottom of screen
   if (Btn1 || Btn2) {
     clen = char_s.push(PushCode);
-    if (clen <= MAXDD)
-      inp_ch = show_cbuf();
+    if (clen <= MAXDD) 
+       inp_ch = show_cbuf();
     timesPressed3 = 0;
     timesPressed4 = 0;
     show_labels(timesPressed3, timesPressed4);
@@ -355,71 +360,58 @@ void loop() {
       new_word = 1; // set new word flag
       lenmesg = -1;
 
-      // get previous word entered -- was it a short code? OR was it a parameter code?
+      // get previous word entered 
       lenpword = word_s.get_pword(pword);
 
-      // debug
-      //char buf1[200];
-      //sprintf(buf1, "length of pword: %d\n", lenpword);
-      //Serial.println(buf1);
-
-      // save ptr to make it easy to find previous word
-      //word_s.save_ptr(0);
-
-      // debug
-      //int i2 = word_s.get_ptr(-1);
-      //int i3 = word_s.get_ptr(0);
-      //sprintf(buf1, "ptr %d, prev_ptr %d, pword: %s", i3, i2, pword);
-      //Serial.println(buf1);
-
-      // was this a short code? If so, display message
+      // was this a short code or Long Press parm code? If so, display message
       if (lenpword > 0 && pword[0] == ':') {
-        p = pword + (char) 1;
-        lenmesg = scode.getcode(p, smesg);
-        //debug
-        //Serial.println("Here 110");
-
-        if (lenmesg > 0) {
-          sprintf(buf, " - %s", smesg);
-          outstr(0, 0, 0, buf);
-          // redisplay message for word wrapping
-          PrvRow = TftReformat();
-          //sprintf(buf1, "c. PrvRow: %d", PrvRow);
-          //Serial.println(buf1);
-
+        pword1 = pword + (char) 1;
+        memset(buf, 0, SIZMESG); 
+        if (lenpword == 3) { // it might be a Long Press param
+           valLP = LongPressLookup(pword1); 
+           if (valLP > 0) { // it was a Long Press param -- update global variable, EEPROM, and display new value
+              LongPress = valLP;
+              EEp.msLongPress = LongPress;
+              EEPROM.put(eeAdr, EEp);
+              f_longPress = (float)LongPress / 1000.0;
+              dtostrf(f_longPress, 3, 1, buf1);
+              sprintf(buf, "Long Press %s Sec.", buf1);
+           }
         }
+        if (!strlen(buf))  // it wasn't a Long Press param, try for a short code
+           lenmesg = scode.getcode(pword1, buf);
+
+        // not a code - display as is
+        if (!strlen(buf)) 
+            sprintf(buf, "%s ", pword);
+           
+        tok = strtok(buf, s);
+        while (tok != NULL)  {
+           strcpy(buf1, tok);
+           message_s.push(buf1); 
+           DisplayMessage();         
+           tok = strtok(NULL, s);
+        }        
       }
       else {
-        //debug
-        //Serial.println("Here 111");
-        //sprintf(buf1, "a. CurRow1: %d, CurRow2: %d, PrvRow: %d", CurRow1, CurRow2, PrvRow);
-        //Serial.println(buf1);
 
-        ptr = word_s.get_ptr(0);
-        isedge = ptr % NCOL;  
+        // push word onto message stack 
+        message_s.push(pword); 
 
-        if (isedge == 0 || isedge == (NCOL-1)) {
-             CurRow2 += SIZER;
-             word_s.save_prev_fmt(ptr); 
-        }
-        else
-            CurRow2 = outc(1, 1, ' ', 0);
-            
-        //sprintf(buf1, "b. CurRow1: %d, CurRow2: %d, PrvRow: %d", CurRow1, CurRow2, PrvRow);
-        //Serial.println(buf1);
+        // display the message
+        DisplayMessage(); 
 
-        if ((CurRow1 > PrvRow || CurRow2 > PrvRow))  // if char or space went to next line, reformat text
-          PrvRow = TftReformat();
       }
-      //debug
-      //Serial.println("Here 112");
+
+      // clear the word row
+      cls(2);
 
       timesPressed3 = 2;
     }
     else if (timesPressed3 == 2 || inp_ch == '.' || inp_ch == 's') {  // enter pressed 3 times - speak
-      speaklen = word_s.get_words(speaktxt);
+      memset(speaktxt, 0, MAXWORD_TXT); 
+      speaklen = GetMessage(speaktxt);
       if (speaklen) {
-        word_filter(1, speaktxt);
         sprintf(buf, "S%s\n", speaktxt);
         Serial1.print(buf);
       }
@@ -437,7 +429,7 @@ void loop() {
       timesPressed3 = 0;
     }
     else {
-      CurRow1 = outc(1, 1, inp_ch, ReFmt);  // normal case - display character
+      CurRow1 = outch(inp_ch);  // normal case - display character
       timesPressed3 = 1;
     }
 
@@ -633,16 +625,35 @@ int show_cbuf() {
 // clear the screen and buffers
 // mode 0 - clear buffers and print "OK"
 // mode 1 - clear only char buff, no "OK"
+// mode 2 - clear the Word line
+// mode 3 - clear the message area (lines 1-4) 
 void cls(int mode) {
+  int row = WORDROW * SIZER;
+  int cols = NCOL * SIZEC;
+  int msgRows = SIZER * 5;  
+
   if (mode == 0) {
+    message_s.clear(); 
     word_s.clear();
     char_s.clear();
     tft.fillScreen(0xFFFF);
-    outstr(1, 1, 0, "OK>");
-    //word_s.save_ptr(-1);
+    tft.setCursor(0, (WORDROW * SIZER));
+    tft.print("OK>");
+    CursorMgt(1, 1); // turn on cursor
   }
   else if (mode == 1)
     tft.fillScreen(0xFFFF);
+  else if (mode == 2) { // clear the Word line 
+    word_s.clear();
+    char_s.clear();
+    tft.fillRect(0, row, cols, SIZER, ILI9341_WHITE);
+    tft.setCursor(0, (WORDROW * SIZER));
+    tft.print("OK>");
+    CursorMgt(1, 1); // turn on cursor
+  }
+  else if (mode == 3) {  // clear the Message Area
+    tft.fillRect(0, 0, cols, msgRows, ILI9341_WHITE);
+  } 
 }
 
 // clear buffer area - side=1 left, side=2 right, both=3
@@ -662,112 +673,114 @@ void clr_buf(int side) {
     tft.fillRect(c, r, 320, 25, ILI9341_WHITE);
   }
 }
-
-// output a string to the tft
-// lc - display on lcd
-// ser - display on serial
-// wrap - wrap the message properly
-void outstr(int lc, int ser, int wrap, char *str) {
-  int i, j, len;
-  char c;
-
-  len = strlen(str);
-  for (i = 0; i < len; i++) {
-    c = str[i];
-    outc(lc, ser, c, 0);
-  }
-}
-
 // backspace on the tft -
 // -1 flags to erase last character and pop the stack
 void backspace() {
-  outc(1, 1, -1, 0);
+  outch(-1);
 }
 
-// output to tft or Serial Terminal
-int outc(int tft, int ser, char c, int ReFmt) {
-  int CurRow;
+// Display Message in upper part of screen
+int DisplayMessage() {
+    static int Row, Col;
+    int tftcol, tftrow; 
+    int ptr, len, newcol;
+    char word[MAXWORD]; 
+    char buf[50];
 
-  CurRow = tft_display(tft, c, ReFmt);
-  if (ser) Serial.print(c);
-  return CurRow;
+    ptr = message_s.get_ptr(); 
+    message_s.get_msg(-1, word); 
+    len = strlen(word); 
+
+    // setup row and col for next word
+    if (ptr == 1) {
+        Row = 0; 
+        Col = 0; 
+    }
+    else {
+        newcol = Col + len; 
+        if (newcol >= NCOL) {
+            Col = 0; 
+            Row++;
+            if (Row > 4) {
+                tftcol = (NCOL-3) * SIZEC;
+                tftrow = 4 * SIZER;
+                tft.setCursor(tftcol, tftrow);
+                tft.println("..");
+                delay(3000); 
+                cls(3);
+                Col = 0; 
+                Row = 0; 
+            }
+        }
+    }
+    
+    tftcol = Col * SIZEC;
+    tftrow = Row * SIZER;
+    tft.setCursor(tftcol, tftrow);
+    tft.println(word);
+
+    // ready for the next word
+    Col += len + 1; 
 }
 
-// send output to the tft
-// c is the character to display
-// if c == -1, backspace
-// manage the cursor underscore _ that leads the text
-int tft_display(int Tft, char chr, int ReFmt) {
-  int i, i1, j, nr, lenw, lenbuf, ptr;
-  //int col, row, c, r;
+// return the entire message in msg
+int GetMessage(char *msg) {
+    int i, j, len; 
+    char buf[MAXWORD]; 
+
+    i = message_s.get_ptr();
+
+    for (j=0; j < i; j++) {
+        message_s.get_msg(j, buf);
+        len = strlen(msg); 
+        len =+ strlen(buf) + 1;
+        if (len < MAXWORD_TXT) {
+            strcat(msg, buf); 
+            if (j)
+                strcat(msg, " "); 
+        }
+    }
+    i = strlen(msg); 
+    return i; 
+}
+
+
+// output to tft 
+int outch(char chr) {
+  int i, i1, j, nr, lenw, lenbuf, ptr, row, ptr1;
   static int cursor_c, cursor_r;
   char ch, c1[3], buf[20];
 
+  // fixed row for word display
+  row = SIZER * WORDROW; 
+
   // setup pointer to cursor position
-  ptr = word_s.get_ptr(0);
+  ptr = word_s.get_ptr();
 
   // if char input, push to word stack
   if (chr > 0) {
     ptr = word_s.push(chr);
   }
   // if char input and tft enabled
-  if (chr > 0 && Tft) {
+  if (chr > 0) {
     if (ptr < MAXWORD_TXT - 1) {
       CursorMgt(0, 0);  // turn off previously set cursor
       tft.setTextColor(ILI9341_BLACK);
-      setcursor(1, ptr, 0, 0, &cursor_c, &cursor_r);
+      setcursor_wrd(1, ptr, 0, 0, &cursor_c);
       tft.print(chr);
       CursorMgt(1, ptr + 1); // turn on new cursor
     }
   }
-  else if (chr < 1 && Tft) { // backspace
+  else if (chr < 1) { // backspace
     CursorMgt(0, 0);  // turn off previously set cursor
     i = word_s.pop();
-    ptr = word_s.get_ptr(0);
-    setcursor(1, ptr + 1, 0, 0, &cursor_c, &cursor_r);
-    tft.fillRect(cursor_c, cursor_r, 50, 25, ILI9341_WHITE);
+    ptr = word_s.get_ptr();
+    ptr1 = ptr + 4;
+    setcursor(1, ptr1, 0, 0, &cursor_c, &cursor_r);
+    tft.fillRect(cursor_c, row, 50, 25, ILI9341_WHITE);
     CursorMgt(1, ptr + 1); // turn on cursor
   }
   return cursor_r;
-}
-
-// output a string to the tft - don't use word storage
-// str is the string to display
-// beg is the offset
-// wrap > 0 - wrap the message properly
-int outstr_direct(char *str, int beg, int wrap) {
-  int i, j, len, pos, row;
-  char c;
-  char buf[200];
-
-  len = strlen(str);
-  for (i = 0; i < len; i++) {
-    c = str[i];
-    pos = i + beg;
-    row = tft_display_direct(c, pos, 0);
-  }
-  tft_display_direct(c, len, 1);
-
-  // debug
-  //sprintf(buf, "buf: %s", str);
-  //Serial.println(buf);
-  return row;
-}
-
-// direct display to tft
-//
-int tft_display_direct(char chr, int pos, int cur) {
-  int col, row, i;
-
-  if (!cur) {
-    tft.setTextColor(ILI9341_BLACK);
-    setcursor(1, pos, 0, 0, &col, &row);
-    tft.print(chr);
-  }
-  else {
-    CursorMgt(1, pos + 1); // turn on cursor
-  }
-  return row;
 }
 
 // create and destroy cursor
@@ -778,14 +791,18 @@ void CursorMgt(int c_on, int pos) {
   int c, r;
   static int tftcol, tftrow;
 
+  //tftrow = 150;
+  //tftcol = 0; 
+  //pos += 4;  
+
   if (c_on) {
     tft.setTextColor(ILI9341_BLACK);
-    setcursor(1, pos, 0, 0, &tftcol, &tftrow);
+    setcursor_wrd(1, pos, 0, 0, &tftcol);
     tft.print("_");
   }
   else {
     tft.setTextColor(ILI9341_WHITE);
-    setcursor(1, -1, -1, -1, &tftcol, &tftrow);
+    setcursor_wrd(1, -1, -1, -1, &tftcol);
     tft.print("_");
   }
 }
@@ -820,6 +837,34 @@ void setcursor(short mode, int pos, int col, int row, int *tftcol, int *tftrow) 
     tft.setCursor(*tftcol, *tftrow);
 }
 
+// set the tft cursor in the position needed
+// if pos is provided, placement is relative to 0, 0 with wrapping as each line is filled
+// if row/col provided, placement is absolute
+// -1 in pos indicates that row/col placement to be used
+// -1 in row indicates that tftcol and tftrow be used for placement
+// mode - 0 do nothing but return values in tftcol and tftrow. non-zero move cursor and return values
+void setcursor_wrd(short mode, int pos, int col, int row, int *tftcol) {
+  short pos1, r, c;
+  int tftrow = WORDROW * SIZER;
+  char buf5[50];
+
+  if (pos != -1) {  // based on pointer - lines can overflow
+    pos1 = pos - 1; // subtract one to make zero based
+    pos1 += 3;  // add 3 to begin after prompt "OK>"
+    if (pos1 < NCOL) {
+      *tftcol = pos1 * SIZEC;
+    }
+    else {
+      r = (short) pos1 / NCOL;
+      *tftcol = SIZEC * (pos1 - (r * NCOL));
+    }
+  }
+  else if (row != -1) {
+    *tftcol = SIZEC * col;
+  }
+  if (mode)
+    tft.setCursor(*tftcol, tftrow);
+}
 
 void userparms() {
   int rc;
@@ -855,45 +900,25 @@ int strpos(char *hay, int need, int offset) {
   return rc;
 }
 
-// filter text
-// filter 1 - find "OK>" and delete it
-void word_filter(int mode, char *txt) {
-  char *p, *p2;
-  char txt1[MAXWORD_TXT];
-  char txt2[MAXWORD_TXT];
-  char buf[100];
-  int period[10];
-  int nperiod = 0;
-  int i, len;
-
-  for (i = 0; i < 10; i++) period[i] = 0;
-  nperiod - -1;
-  memset(txt1, 0, MAXWORD_TXT);
-  memset(txt2, 0, MAXWORD_TXT);
-  strcpy(txt1, txt);
-  p = txt1;
-  len = strlen(txt1);
-
-  // say text since the last period
-  if (mode == 2) {
-    for (i = 0; i < len; i++) {
-      if (txt1[i] == '.') {
-        period[nperiod] = i;
-        nperiod++;
+// lookup Long Press Codes
+// original code came from: http://stackoverflow.com/questions/5193570/value-lookup-table-in-c-by-strings
+int LongPressLookup(char *LPCode)
+{
+  typedef struct item_t { const char *code; int value; } item_t;
+  item_t table[] = {
+    { "L3", 300}, { "L4", 400}, { "L5", 500}, { "L6", 600},
+    { "L7", 700}, { "L8", 800}, { "L9", 900}, { "LA", 1000},
+    { "LB", 1100}, { "LC", 1200}, { "LD", 1300}, { "LE", 1400},
+    { "LF", 1500 }, { NULL, 0 }
+  };
+  for (item_t *p = table; p->code != NULL; ++p) {
+      if (strcmp(p->code, LPCode) == 0) {
+          return p->value;
       }
-    }
-    if (nperiod > 1)
-      p += period[nperiod - 2] + 1;
   }
-
-  strcpy(txt2, p);
-  p2 = txt2;
-
-  if (!strncmp(txt2, "OK>", 3))
-    p2 += 3;
-
-  strcpy(txt, p2);
+  return -1;
 }
+
 // SD Card fgets
 //
 char *SD_fgets(char *str, int sz, File fp)
@@ -916,166 +941,6 @@ void setvoice(int v) {
   sprintf(buf, "N%d\n", v);
   Serial1.print(buf);
   Serial1.flush();
-}
-
-// message to screen, with delay
-// at end of delay, re-display previous screen
-void UserMsg(int nMsg, int dlay) {
-  char buf[150];
-  int len, i;
-  char words[MAXWORD_TXT];
-
-  cls(1);
-
-  switch (nMsg) {
-    case 0:
-      strcpy(buf, "Hello, World");
-      outstr_direct(buf, 1, 0);
-      break;
-  }
-
-  delay(dlay);
-
-  cls(1);
-
-  len = word_s.get_words(words);
-  outstr_direct(words, 1, 0);
-}
-
-// reformat word stack to wrap properly on the TFT
-// add spaces to prevent word splits
-int TftReformat() {
-  char buf[MAXWORD_TXT + 1];  // copy of the word stack
-  char buf1[MAXWORD_TXT + 1];  // another copy of the word stack
-  char cp_words[MAXWORD_TXT + 1];  // copy of the word stack
-  char buf2[300];
-  char *tok, *p;
-  char **a = (char **)malloc(MAXWORDS * sizeof(char *));
-  char s[2];
-  int i, i1, n, len_words, len_nxtword, len_tot_words, len_lines, len_open_space, len_cp_words, len_mod_cp_words_NCOL, lno;
-  int prev_fmt, len, row;
-
-  strcpy(s, " ");
-  prev_fmt = word_s.save_prev_fmt(0);
-  memset(cp_words, 0, MAXWORD_TXT + 1);
-  memset(buf1, 0, MAXWORD_TXT + 1);
-
-  // debug
-  //sprintf(buf2, "prev_fmt %d\n", prev_fmt);
-  //Serial.println(buf2);
-
-
-  // get text
-  word_s.get_words(buf);
-  word_s.clear();
-
-  // debug
-  //i = strlen(buf);
-  //sprintf(buf2, "original: %s, len=%d\n", buf, i);
-  //Serial.println(buf2);
-
-
-  // copy part of words already formatted
-  if (prev_fmt) {
-    len = strlen(buf) - prev_fmt;
-    strncpy(cp_words, buf, prev_fmt);
-    p = buf + prev_fmt;
-    strncpy(buf1, p, len);
-  }
-  else
-    strcpy(buf1, buf);
-
-  // debug
-  //sprintf(buf2, "prev words: %s, new words: %s\n", cp_words, buf1);
-  //Serial.println(buf2);
-
-  // get text into array
-  tok = strtok(buf1, s);
-  n = 0;
-  //sprintf(buf2, "a. n: %d, tok: %s\n", n, tok);
-  //Serial.println(buf2);
-
-  while (tok != NULL)  {
-    len = strlen(tok);
-    if (len >= MAXWORD)
-      len = MAXWORD - 1;
-    a[n] = (char *)malloc(MAXWORD + 1);
-    memset(a[n], 0, MAXWORD + 1);
-    strncpy(a[n], tok, len);
-    tok = strtok(NULL, s);
-    //if (n < MAXWORDS)
-    n++;
-    //sprintf(buf2, "b. n: %d, tok: %s\n", n, tok);
-    //Serial.println(buf2);
-    if (n >= MAXWORDS)
-      break;
-  }
-
-  // format text
-  for (i = 0; i < n; i++) {
-    sprintf(buf2, "i: %d, a[i]: %s\n", i, a[i]);
-    Serial.println(buf2);
-
-    len_words = strlen(cp_words); // length of current string
-    len_nxtword = strlen(a[i]);     // length of incoming word
-    len_tot_words = len_words + len_nxtword + 1;  // total of above, with space
-    lno = (int) (len_words / NCOL) + 1; // actual number of lines used (1-based)
-    len_lines = lno * NCOL;       // number of possible chars in currently used lines
-    len_open_space = len_lines - len_tot_words;      // line space remaining - positive: OK, negative: overflow
-
-    // debug
-    //sprintf(buf2, "ln = %d, len_lines = %d, len_open_space = %d -- a[i]: %s\n", lno, len_lines, len_open_space, a[i]);
-    //Serial.println(buf2);
-
-    if (len_open_space < 0) {
-      len_cp_words = strlen(cp_words);
-      len_mod_cp_words_NCOL = len_cp_words % NCOL;
-
-      while (len_mod_cp_words_NCOL)  {
-        strcat(cp_words, " ");
-        len_cp_words = strlen(cp_words);
-        len_mod_cp_words_NCOL = len_cp_words % NCOL;
-        // debug
-        //sprintf(buf2, "    len_cp_words = %d, len_mod_cp_words_NCOL = %d\n", len_cp_words, len_mod_cp_words_NCOL);
-        //Serial.println(buf2);
-      }
-    }
-    else {
-      len_cp_words = strlen(cp_words);
-      len_mod_cp_words_NCOL = len_cp_words % NCOL;
-      // debug
-      //sprintf(buf2, "    len_cp_words = %d, len_mod_cp_words_NCOL = %d\n", len_cp_words, len_mod_cp_words_NCOL);
-      //Serial.println(buf2);
-      if ((len_mod_cp_words_NCOL != 0) && len_cp_words > prev_fmt)
-        strcat(cp_words, " ");
-    }
-
-    strcat(cp_words, a[i]);
-    // debug
-    //sprintf(buf2, "cp_words now (i=%d): %s\n", i, cp_words);
-    //Serial.println(buf2);
-
-  }
-
-  // free malloc'ed memory
-  for (i = 0; i < n; i++)
-    free(a[i]);
-  free(a);
-
-  // resave text
-  strcat(cp_words, " ");
-  len_words = strlen(cp_words);
-  prev_fmt = word_s.save_prev_fmt(len_words);
-  //word_s.save_ptr(0);
-  word_s.push_words(cp_words);
-  cls(1);
-  row = outstr_direct(cp_words, 1, 0);
-
-  // debug
-  //sprintf(buf2, "cp_words: %s\n", cp_words);
-  //Serial.println(buf2);
-
-  return row;
 }
 
 void bmpDraw(char *filename, uint8_t x, uint16_t y) {

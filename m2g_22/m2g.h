@@ -27,7 +27,7 @@ any lines above THIS line.
 #define MAXSCODE_TXT 80
 #define MAXWORD_TXT 200
 #define MAXWORDS 40
-#define MAXWORD 40
+#define MAXWORD 15
 #define MAXMCODES 60
 #define MAXSCODES 40
 #define NPARMS 6
@@ -35,7 +35,7 @@ any lines above THIS line.
 #define BUFMCODE 1000
 #define BUFSCODE 1200
 #define BUFPCODE 100
-#define SIZPWORD 20
+#define SIZPWORD 15
 #define SIZMESG 100
 #define NCOL 19
 #define DEBUG 0
@@ -48,6 +48,7 @@ any lines above THIS line.
 #define LONGPRESS 500
 #define SIZEC 17
 #define SIZER 30
+#define WORDROW 5
 
 // bitwise ops
 #define MODE_MORSE 1
@@ -107,27 +108,31 @@ class char_stk {
     long get_charval(int &, int *); // return character value, eg, 12 or 2121, value of ptr and ditdah array
 };
 
-// word class -- stack of characters and spaces
+// word class -- stack of characters that make up a single word
 class word_stk {
-   public:
-     char words[MAXWORD_TXT + 1]; // word stack [characters]
+  public:
+     char words[MAXWORD]; // word stack [characters]
      int ptr; // pointer to next char to be added - also the length
-     int prev_ptr; // pointer to prev value of ptr, when it was a space -- used to find last token
-     int prev_fmt; // pointer to previously formatted text of TFT. Text before this pointer isn't touched by TFTReformat().
      word_stk();
      int clear(); // clear the stack
      int push(char); // push a char onto word stack
-     int push_words(char *); // push a bunch of characters onto the word stack
      int pop(); // pop last character that was just pushed
-     int nextword(); // go to next word
-     int get_words(char *); // get string of word stack
-     int save_ptr(int); // save pointer in prev_ptr
-     int update_ptr(int); // update pointer
-     int get_ptr(int); // get ptr or prev_ptr
+     int get_ptr(); // get ptr
      int get_pword(char *); // get previous word
-     int trim_words(); // trim length of words stack
-     int save_prev_fmt(int); // save or get value of prev_fmt
 }; 
+
+// message class - stack of words that display on the screen
+class message_stk {
+  public:
+      char **msg;  // array of char 
+      int ptr; 
+      message_stk();
+      int clear();
+      int push(char *);
+      int pop(char *); 
+      int get_msg(int, char *);
+      int get_ptr(); 
+};
 
 // EEPROM data
 // 80 byte struct 
