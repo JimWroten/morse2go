@@ -28,10 +28,10 @@ any lines above THIS line.
 #define MAXWORD_TXT 200
 #define MAXWORDS 40
 #define MAXWORD 15
-#define MAXMCODES 60
+#define MAXMCODES 52
 #define MAXSCODES 40
 #define NPARMS 6
-#define BUFSZ 2300
+#define BUFSZ 1000
 #define BUFMCODE 1000
 #define BUFSCODE 1200
 #define BUFPCODE 100
@@ -49,6 +49,8 @@ any lines above THIS line.
 #define SIZEC 17
 #define SIZER 30
 #define WORDROW 5
+#define VOICE 3
+#define CKVALUE 12345
 
 // bitwise ops
 #define MODE_MORSE 1
@@ -135,9 +137,10 @@ class message_stk {
 };
 
 // EEPROM data
-// 80 byte struct 
 struct EEPromData {
-     unsigned long msLongPress; // length of a long press
-     char filler[76];  // to be used in the future
+     int ckvalue;  // should be 12345
+     int LongPress; // length of a long press (300 - 1500)
+     int Voice; // voice number to use (0 - 8)
+     int v[10];  // reserved
 };
 

@@ -56,6 +56,8 @@ any lines above THIS line:
     design and gives the user more focus on the bottom three lines of the display. 
   - Added Long Press user control. By entering one of 13 codes (:L3 to :L9 and :LA to :LF) user can vary the lenght of a long press from 
     0.3 seconds to 1.5 seconds, respectively. This new value is saved for the next reboot. 
+  - Added Voice Param user contral. By entering one of the 9 codes (:V0 ot :V8) the user can change the voice of the Text-to-Speech module.
+    This new value is saved for the next reboot.   
 */
 
 #include <Adafruit_GFX.h>    // Core graphics library
@@ -96,10 +98,13 @@ message_stk message_s;
 StopWatch SW;
 
 // length of a long press (minimum in milliseconds)
-unsigned long LongPress;
+int LongPress;
+
+// voice parm
+int Voice;
 
 // flag that is set if long press done
-short LongPress1, LongPress2, LongPress3;
+int LongPress1, LongPress2, LongPress3;
 
 // pin number can be changed
 const int inPin1 = 41;     // button 1 - dit
@@ -137,9 +142,9 @@ const long debounceDelay = DEBOUNCEDELAY;     // delay in milliseconds
 int pr_vc = PRVC;
 int pr_fn = PRFN;
 
-// EEPROM data
-int eeAdr = 0;
-EEPromData EEp;
+// EEPROM data 
+int Adr = 0;
+EEPromData Eep;
 
 int inp_ch = -1;
 
@@ -151,7 +156,7 @@ void setup()
   int mode;
   char buf[20], buf1[20];
   int v[NPARMS];
-  float f_longPress;
+  float f_longPress, f_voice;
 
   // Open serial communications and wait for port to open:
   Serial.begin(9600);
@@ -165,23 +170,35 @@ void setup()
   Serial1.print('\n');             // Send a CR in case the system is already up
   delay(20);
   while (Serial1.read() != ':');   // When the Emic 2 has initialized and is ready, it will send a single ':' character, so wait here until we receive it
-  sprintf(buf, "N%d\n", pr_vc);
-  Serial1.print(buf);
   Serial1.flush();                 // Flush the receive buffer
 
   // read EEPROM data
-  EEPROM.get(eeAdr, EEp);
-  LongPress3 = 0;
+  EEPROM.get(Adr, Eep);
 
-  // initialize first time - set to reasonable default values
-  if (EEp.msLongPress < 300 || EEp.msLongPress > 1500) {
-    EEp.msLongPress = LONGPRESS;
-    memset(EEp.filler, 0, sizeof(EEp.filler));
-    EEPROM.put(eeAdr, EEp);
+  if (Eep.ckvalue != CKVALUE) {  // initialize first time if never used
+      for (i = 0 ; i < EEPROM.length() ; i++)
+        EEPROM.write(i, 0);
+
+      Eep.ckvalue = CKVALUE;
+      Eep.LongPress = LongPress = LONGPRESS;
+      Eep.Voice = Voice = VOICE; 
+      for (i = 0; i < 10; i++) 
+          Eep.v[i] = 0; 
+      EEPROM.put(Adr, Eep);
+      sprintf(buf, "eeprom initialized - first time use");
+      Serial.println(buf); 
   }
-  LongPress = EEp.msLongPress;
-  sprintf(buf, "LongPress : %u\n", LongPress);
-  Serial.println(buf);
+  else {
+      LongPress = Eep.LongPress;
+      Voice = Eep.Voice; 
+      sprintf(buf, "Voice: %d, Long Press: %d\n", Voice, LongPress);
+      Serial.println(buf);
+  }
+  sprintf(buf, "N%d\n", Voice); 
+  Serial1.print(buf);
+  Serial1.flush();                 // Flush the receive buffer
+
+  LongPress3 = 0;
 
   // input keys setup
   pinMode(inPin1, INPUT);
@@ -210,14 +227,8 @@ void setup()
   // load user parameter file if it exists
   ReadParmFile(USR_PARM);
 
-  // setup timing variables
-  userparms();
-
   // sort the codes
   mcode.sortcode();
-
-  // set the voice for the EMIC 2
-  setvoice(pr_vc);
 
   // setup TFT screen
   tft.begin();
@@ -251,9 +262,9 @@ void setup()
 // repeat this forever, checking for a keypress or key release event
 void loop() {
 
-  char buf[SIZMESG], buf1[MAXWORD];
-  unsigned long timebtn1, timebtn2, timebtn3, timebtn4;
-  int Btn1, Btn2, Btn3, Btn4, PushCode, clen, lenmesg, CurRow1, ptr, valLP ;
+  char buf[SIZMESG], buf1[SIZMESG];
+  int timebtn1, timebtn2, timebtn3, timebtn4;
+  int Btn1, Btn2, Btn3, Btn4, PushCode, clen, lenmesg, CurRow1, ptr, valLP, valVOZ ;
   int speakit, speaklen, new_word, csize, lenpword;
   char speaktxt[MAXWORD_TXT];
   char pword[SIZPWORD];
@@ -371,14 +382,22 @@ void loop() {
            valLP = LongPressLookup(pword1); 
            if (valLP > 0) { // it was a Long Press param -- update global variable, EEPROM, and display new value
               LongPress = valLP;
-              EEp.msLongPress = LongPress;
-              EEPROM.put(eeAdr, EEp);
+              EepUpdate(1, LongPress);
               f_longPress = (float)LongPress / 1000.0;
               dtostrf(f_longPress, 3, 1, buf1);
               sprintf(buf, "Long Press %s Sec.", buf1);
            }
+           valVOZ = VoiceLookup(pword1); 
+           if (valVOZ > 0) { // it was a Voice param -- update global variable, EEPROM, and display new value
+              Voice = valVOZ;
+              EepUpdate(2, Voice);
+              sprintf(buf1, "N%d\n", Voice);
+              Serial1.print(buf1);
+              Serial1.flush();                 // Flush the receive buffer
+              sprintf(buf, "Voice Code is %d", Voice);
+           }
         }
-        if (!strlen(buf))  // it wasn't a Long Press param, try for a short code
+        if (!strlen(buf))  // it wasn't a Long Press or Voice param, try for a short code
            lenmesg = scode.getcode(pword1, buf);
 
         // not a code - display as is
@@ -414,6 +433,8 @@ void loop() {
       if (speaklen) {
         sprintf(buf, "S%s\n", speaktxt);
         Serial1.print(buf);
+        Serial1.flush();                 // Flush the receive buffer
+        Serial.println(buf); 
       }
       timesPressed3 = 0;
     }
@@ -732,8 +753,7 @@ int GetMessage(char *msg) {
 
     for (j=0; j < i; j++) {
         message_s.get_msg(j, buf);
-        len = strlen(msg); 
-        len =+ strlen(buf) + 1;
+        len = strlen(msg) + strlen(buf) + 1; 
         if (len < MAXWORD_TXT) {
             strcat(msg, buf); 
             if (j)
@@ -866,19 +886,6 @@ void setcursor_wrd(short mode, int pos, int col, int row, int *tftcol) {
     tft.setCursor(*tftcol, tftrow);
 }
 
-void userparms() {
-  int rc;
-  int v[NPARMS];
-  char buf[100];
-
-  // lookup code file - override defaults if found
-
-  rc = pcode.getcode(v);
-
-  // only voice code parm is being used
-  pr_vc = v[0];
-}
-
 // similar to php function
 // used to find = sign in parmameter input from user
 int strpos(char *hay, int need, int offset) {
@@ -919,6 +926,22 @@ int LongPressLookup(char *LPCode)
   return -1;
 }
 
+// lookup Voice Code
+int VoiceLookup(char *VOZCode)
+{
+  typedef struct item_t { const char *code; int value; } item_t;
+  item_t table[] = {
+    { "V0", 0}, { "V1", 1}, { "V2", 2}, { "V3", 3},
+    { "V4", 4}, { "V5", 5}, { "V6", 6}, { "V7", 7},
+    { "V8", 8 }, { NULL, 0 }
+  };
+  for (item_t *p = table; p->code != NULL; ++p) {
+      if (strcmp(p->code, VOZCode) == 0) {
+          return p->value;
+      }
+  }
+  return -1;
+}
 // SD Card fgets
 //
 char *SD_fgets(char *str, int sz, File fp)
@@ -934,13 +957,24 @@ char *SD_fgets(char *str, int sz, File fp)
   return (ch == EOF && buf == str) ? NULL : str;
 }
 
-void setvoice(int v) {
-  char buf[20];
+// Update the EEPROM data
+// mode 1 - update LongPress
+// mode 2 - update Voice
+int EepUpdate(int mode, int val) {
+    // read EEPROM data
+    EEPROM.get(Adr, Eep);
 
-  v = 3;
-  sprintf(buf, "N%d\n", v);
-  Serial1.print(buf);
-  Serial1.flush();
+    switch(mode) {
+        case 1:
+           Eep.LongPress = val; 
+           break; 
+        case 2:
+           Eep.Voice = val; 
+           break; 
+        default:
+           break; 
+    }
+    EEPROM.put(Adr, Eep);
 }
 
 void bmpDraw(char *filename, uint8_t x, uint16_t y) {
