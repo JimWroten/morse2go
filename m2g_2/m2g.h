@@ -23,27 +23,28 @@ any lines above THIS line.
 
 */
 
-#define MAXDD 6
-#define MAXSCODE_TXT 80
-#define MAXWORD_TXT 115
+#define MAXDD 20
+#define MAXCHAR 80
 #define MAXMCODES 60
 #define MAXSCODES 40
-#define NPARMS 6
+#define MAXPCODES 5
 #define BUFSZ 2300
 #define BUFMCODE 1000
 #define BUFSCODE 1200
 #define BUFPCODE 100
 #define SIZPWORD 20
-#define SIZMESG 100
-#define NCOL 19
+#define SIZMESG 80
+#define NCOL 20
+#define NROW 4
 #define DEBUG 0
-#define PRVC 0
-#define PRFN 3
+#define MSDO 225
+#define MSDA 1000
+#define MSLT 2000
+#define MSCL 5000
 #define CODE "CODE.CSV"
 #define USR_PARM "USR_PARM.CSV"
+#define HELLO_FILE "HELLO.TXT"
 #define DEBOUNCEDELAY 50 
-#define BUFFPIXEL 20
-
 
 // bitwise ops
 #define MODE_MORSE 1
@@ -70,7 +71,7 @@ class mcodes {
 class scodes {
 	public:
 	char skey[MAXSCODES][10];
-	char sval[MAXSCODES][MAXSCODE_TXT];
+	char sval[MAXSCODES][80];
 	int cnt;
         scodes();
 	int loadcode(char *);
@@ -81,12 +82,16 @@ class scodes {
 // parameter codes 
 class pcodes {
 	public:
-	int pvc;  // voice code
+	unsigned pdo[MAXPCODES];
+	unsigned pda[MAXPCODES];
+	unsigned plt[MAXPCODES];
+	unsigned pcl[MAXPCODES];
+	int cnt;
         pcodes();
 	int loadcode(char *);
         int loadparmcode(char *);
-        int putcode(int *);
-	int getcode(int *);
+	int getcode_pop(int, unsigned *);
+        int push(unsigned *);
         int clear();
 };
 
@@ -99,14 +104,13 @@ class char_stk {
     int push(int); // push a ditdah  
     int pop(); // pop last ditdah
     int clear(); // clear stack
-    int size(); // get value of ptr
-    long get_charval(int &, int *); // return character value, eg, 12 or 2121, value of ptr and ditdah array
+    long get_charval(); // get character value, eg, 12 or 2121
 };
 
 // word class -- stack of characters and spaces
 class word_stk {
    public:
-     char words[MAXWORD_TXT + 1]; // word stack [characters]
+     char words[MAXCHAR]; // word stack [characters]
      int ptr; // pointer to next char to be added - also the length
      int prev_ptr; // pointer to prev value of ptr, when it was a space -- used to find last token
      word_stk();
@@ -119,6 +123,6 @@ class word_stk {
      int save_ptr(int); // save pointer in prev_ptr
      int get_ptr(int); // get ptr or prev_ptr
      int get_pword(char *); // get previous word
-     int trim_words(); // trim length of words stack
+     int trim_words(); // trim length of words stack 
 }; 
 

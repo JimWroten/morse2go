@@ -6,7 +6,7 @@ This device accepts Morse Code input from either one key switch or two keys
 and translates the codes onto an LCD screen. Display can also be seen on a
 Smartphone or a Computer Monitor. 
 
-The hardware is based on the Arduino Mega 2560 and Adafruit 2.8" TFT display.
+The hardware is based on the Arduino Due and Hitachi HD44780 20X4 LCD display.
 Morse Code patterns and user defined abbreviations are input from a micro SD card.
 
 Developed jointly by Adaptive Design Associates, NYC (www.adaptivedesign.org), 
@@ -18,8 +18,7 @@ Commons Attribution-ShareAlike 4.0 International License. For more information
 about this license, see www.creativecommons.org/licenses/by-sa/4.0/ 
 -- Basically, you can use this software for any purpose for free, 
 as long as you say where you got it and that if you modify it, you don't remove
-any lines above THIS line:   
--------------------------------------------------
+any lines above THIS line:   -------------------------------------------------
 
 ------------------ Release History  ---------------------------
 
@@ -28,43 +27,33 @@ any lines above THIS line:
   - morse2go code table input from Google docs - support for mcode, scode and pcode
   - user input of timing values. persistent pcode values saved in usr_parm.csv file on Micro SD
   - basic checking of user input parmameters (pcode) upper and lower limits, 10% max change limits 
+  - /U undo - removes last timing parameter entered
   - /D delete - deletes the usr_parm.csv file and reboots. This brings in factory default timings
   - /L list - list current timing paramters 
   - TODO: user input of short codes
+  -      user input of short codes
 
-10/1/14 Release 2.0
-  - moved to Arduino Mega 2560 platform with Adafruit 2.8" TFT LCD shield and Micro SD card - reduces assembly complexity
-  - added EMIC 2 text-to-speech module
-  - construction note: Using the Adafruit 2.8" TFT with the Mega 2560 requires soldering closed the three ICSP jumpers, 
-  near the 6 pin jack. See: https://learn.adafruit.com/adafruit-2-8-tft-touch-shield-v2/connecting - search "Using with a Mega".
-  It isn't necessary to cut the small line in between the #11, #12, #13 pads.
-  
-4/1/15 Release 2.1
-  - Simplified user modified parameters - only saving the last change to parameters, which overrides the Google Doc parameters (pcodes)
-  - Added pcodes /vc (voice)
-  - removed one button operation - use button 1 for dit, button 2 for dah
-  - added enter key and delete key
-  -   enter key - press to accept last entry in buffer. If there is no last entry, insert space, third space - say it
-  -   delete key - press to delete current buffer. If buffer is empty, delete last character on screen, third delete clear screen
-  
-  
+10/1/13 Release 2.0
+
+
 */
 
 #include <Adafruit_GFX.h>    // Core graphics library
-#include "Adafruit_ILI9341.h" // 2.8" touch screen
+#include "Adafruit_ILI9341.h" // Hardware-specific library
 #include <SPI.h>
 #include <SD.h>
+#include <StopWatch.h>
 #include "m2g.cpp"
 
 #define TFT_DC 9
 #define TFT_CS 10
 Adafruit_ILI9341 tft = Adafruit_ILI9341(TFT_CS, TFT_DC);
 
+
 // MicroSD
 const int chipSelect = 4;
-#define SD_CS 4
 
-//int resetPin = 6;  // reset pin - 1k resistor goes to RESET pin
+int resetPin = 6;  // reset pin - 1k resistor goes to RESET pin
 
 // data structure of morse code
 mcodes mcode;
@@ -81,79 +70,71 @@ char_stk char_s;
 // data structure of word stack
 word_stk word_s;
 
-// pin number can be changed
-const int inPin1 = 41;     // button 1 - dit
-int buttonState1 = HIGH;  // button state - dit
-int lastButtonState1 = HIGH;
-long lastDebounceTime1 = 0;  // the last time pin 1 was toggled
-int readingPin1;  // current reading switch 1
+// stopwatches -- used to time switch presses
+// SW[0] - intercharacter time
+// SW[1] - interword time
+StopWatch SW[2];
 
-// pin number can be changed
-const int inPin2 = 43;     // button 2 - dah
-int buttonState2 = HIGH;  // button state - dah
-int lastButtonState2 = HIGH;
-long lastDebounceTime2 = 0;  // the last time pin 2 was toggled
-int readingPin2;  // current reading switch 2
+// button timer variables - triggered by ISR
+volatile long btn1_time;
+volatile byte btn1_evnt = 0;
+volatile byte btn1_state = HIGH;
 
-// pin number can be changed
-const int inPin3 = 47;     // button 3 - enter
-int buttonState3 = HIGH;  // button state - enter
-int lastButtonState3 = HIGH;
-long lastDebounceTime3 = 0;  // the last time pin 3 was toggled
-int readingPin3;  // current reading switch 3
-short timesPressed3 = 0; // times enter key pressed in a row
+volatile long btn2_time;
+volatile byte btn2_evnt = 0;
+volatile byte btn2_state = HIGH;
 
-// pin number can be changed
-const int inPin4 = 49;     // button 4 - delete
-int buttonState4 = HIGH;  // button state - delete
-int lastButtonState4 = HIGH;
-long lastDebounceTime4 = 0;  // the last time pin 3 was toggled
-int readingPin4;  // current reading switch 4
-short timesPressed4 = 0; // times delete key pressed in a row
+// these can be changed
+const int inPin1 = 20;     // button 1 - dit
+const int inPin2 = 21;     // button 2 - dah
+const int inSwit = 49;     // switch - 1 button or 2 button
 
-const long debounceDelay = DEBOUNCEDELAY;     // delay in milliseconds
+// time constants - defined, but overridden by code or user file (in that order)
+unsigned ms_do = MSDO;
+unsigned ms_da = MSDA;
+unsigned ms_lt = MSLT;
+unsigned ms_cl = MSCL;
 
-// voice param
-int pr_vc = PRVC;
-int pr_fn = PRFN;
-
-int inp_ch = -1;
+int readingPin1;           // the current readingPin1 from the input pin
+int readingPin2;           // the current readingPin2 from the input pin
+int readingSwit;           // the current from the switch
+int SwitchMode;            // value of 1 or 2 button mode switch
+int loopctr = 0;
 
 // done once to load classes and setup     
 void setup()
 {
   char *p;
-  int i = 0, j = 0, n = 0, k, r, c;
+  int i = 0, j = 0, n = 0, k;
   int mode;
-  char buf[10];
-  int v[NPARMS];
 
   // Open serial communications and wait for port to open:
   Serial.begin(9600);
-  
-  // Open serial communications for EMIC 2 Text to Speech module
-  // Pin18 is TX pin - connect to SIN on EMIC 2
-  // Pin19 is RX pin - connect to SOUT on EMIC 2
-  // NOTE: This code is specific to Arduino Mega
-
-  Serial1.begin(9600);
-  Serial1.print('\n');             // Send a CR in case the system is already up
-  delay(20); 
-  while (Serial1.read() != ':');   // When the Emic 2 has initialized and is ready, it will send a single ':' character, so wait here until we receive it
-  sprintf(buf, "N%d\n", pr_vc);
-  Serial1.print(buf); 
-  Serial1.flush();                 // Flush the receive buffer
 
   // input keys setup  
   pinMode(inPin1, INPUT);
   pinMode(inPin2, INPUT);
-  pinMode(inPin3, INPUT);
-  pinMode(inPin4, INPUT);
+  pinMode(inSwit, INPUT);
 
-  digitalWrite(inPin1, HIGH);
-  digitalWrite(inPin2, HIGH);
-  digitalWrite(inPin3, HIGH);
-  digitalWrite(inPin4, HIGH);
+ digitalWrite(inPin1, HIGH);
+ digitalWrite(inPin2, HIGH);
+ digitalWrite(inSwit, HIGH);
+ 
+ // Interrupt for button presses
+ attachInterrupt(3, ckbtn1, CHANGE);  // button 1  
+ attachInterrupt(2, ckbtn2, CHANGE);  // button 2
+ 
+  Serial.println("Starting...");
+  delay(1000);
+  
+  // setup TFT screen 
+  tft.begin();
+  tft.fillScreen(0xFFFF);
+  tft.setCursor(0, 0);
+  tft.setTextColor(ILI9341_BLACK);  
+  tft.setTextSize(2);
+  tft.setRotation(1);
+  tft.print("tft starting"); 
 
   // for Micro SD
   pinMode(chipSelect, OUTPUT);
@@ -164,61 +145,82 @@ void setup()
     // don't do anything more:
     return;
   }
-        
- // load data file from Google Docs copied onto Micro SD
+
+  // initialize reset
+  //digitalWrite(resetPin, HIGH);
+  //delay(20);
+  //pinMode(resetPin, OUTPUT);
+  
+  //k = helloFile(2);
+  k = 0;
+  tft.setCursor(0, 100);
+  tft.print("tft init"); 
+  
+  // Setup LCD size - send out hello message
+  if (k == 0) {
+    tft.setCursor(0, 0);
+    tft.fillScreen(0xFFFF);
+    tft.print(F("Adaptive Design"));
+    tft.setCursor(0, 20);
+    tft.print(F("Assoc. & HOSARC"));
+    tft.setCursor(0, 40);
+    tft.print(F("m2g - morse2go.org"));
+    tft.setCursor(0, 60);
+    tft.print(F("Version 2.0"));
+    // show the hello message
+    delay(2000);
+  }
+
+  //k = helloFile(0); // delete for next boot
+
+  tft.fillScreen(0xFFFF);
+  tft.setCursor(0, 0);
+  tft.print(F("OK>"));
+
+  word_s.clear();
+  char_s.clear();
+    
+  // start keyboard emulation
+  //Keyboard.begin();
+  
+  // SwitchMode == HIGH, use 1 button mode, LOW is for 2 button mode
+  readingSwit = digitalRead(inSwit);
+  if (readingSwit == LOW)
+     SwitchMode = LOW;
+  else
+     SwitchMode = HIGH; 
+
+  // load data file from Google Docs copied onto Micro SD
   ReadDataFile(CODE);
   
   // load user parameter file if it exists
   ReadParmFile(USR_PARM);
 
   // setup timing variables
-  userparms();
+  setup_timing();
 
   // sort the codes
   mcode.sortcode();
-    
-   // set the voice for the EMIC 2
-   setvoice(pr_vc);
-     
-   // setup TFT screen 
-   tft.begin();
-   tft.setTextColor(ILI9341_BLACK);  
-   tft.setTextSize(2);  // font param
 
-   tft.setRotation(1);
-   bmpDraw("m2g.bmp", 0, 0);
-   delay(2000);
-   tft.fillScreen(0xFFFF);
-   setcursor(1, -1, 4, 4, &c, &r);
-   tft.setTextColor(ILI9341_BLACK);  
-   tft.print(F("M2G Version 2.1"));
-   delay(2000);
-   Serial1.print("S M 2 G Version 2.1\n"); 
-   tft.setTextSize(pr_fn);  // font param
-   cls();
-   show_labels(0, 0); 
 }
 
 // repeat this forever, checking for a keypress or key release event
 void loop() {
   unsigned long btn_open_char;
   unsigned long btn_open_word;
-  char buf[20];
   long chr;
-  int i, j, j1, k, bksp, clen, csize;
-  int readingPin3;
-  int readingPin4;
+  int i, j, k;
   int pos_op; // position of operator (eg, = sign)
   int parm_new; // new value of input parm
-  int parm_val;
+  char inp_ch;
   char pword[SIZPWORD];
-  char smesg[MAXSCODE_TXT];
-  char word1[MAXWORD_TXT];
+  char smesg[SIZMESG];
   unsigned pval;
-  long mstime;
   static char pval_str[10];
   static char parm[20];
   static int pval_len;
+  static int prevPin1;        // previous value of pin1
+  static int prevPin2;        // previous value of pin1
   char c;
   char *p;
   char *pchr;
@@ -227,194 +229,321 @@ void loop() {
   int shown = 0;
   int wordShown = 0;
   int bsdone = 0;
-  int lenmesg;
-  int speakit;
-  char speaktxt[MAXWORD_TXT];
-  int speaklen; 
-  int new_word;  
-  void outc(int, int, char);
+  int lenmesg; 
+  void outc(int, int, int, char);
   
-  // flag to speak message
-  speakit = 0;
-  bksp = 0;
-  mstime = millis();
-  
-  // set new word to no
-  new_word = 0; 
-
- // dit Button (#1) Pressed 
-  readingPin1 = digitalRead(inPin1);    
-  if (readingPin1 != lastButtonState1) {
-    lastDebounceTime1 = mstime;    
+ 
+  // startup with switches open
+  if (!loopctr) {
+    prevPin1 = HIGH;  
+    prevPin2 = HIGH;  
+    loopctr=1;
   }
-  if ((mstime - lastDebounceTime1) > debounceDelay) {
-    if (readingPin1 != buttonState1) {
-        buttonState1 = readingPin1;
+  
+  // initial values
+  //msec_press1 = msec_nopress1_char = msec_nopress1_word = 0; 
+    
+  //readingPin1 = digitalRead(inPin1);  // value of button 1
+  //readingPin2 = digitalRead(inPin2);  // value of button 2
 
-        // dit pressed
-        if (buttonState1 == LOW) {
+ //char buf3[80];
+ //sprintf(buf3, "pin1 %d, previous %d", readingPin1, prevPin1);
+ //Serial.println(buf3);
+  
+ /* 
+ // key was pressed 
+ if ((readingPin1 == LOW && prevPin1 == HIGH) || (SwitchMode == LOW && readingPin2 == LOW && prevPin2 == HIGH)) {
+     if (readingPin1 == LOW) 
+         prevPin1 = LOW;
+     if (readingPin2 == LOW) 
+         prevPin2 = LOW;
+     shown = 0; // keypress, not shown yet
+     wordShown = 0;
+     for (i=0; i<3; i++) SW[i].stop(); // stop end of char, end of word
+     SW[0].reset(); // reset beg timer
+     SW[0].start(); // start beg timer
+     SW[2].reset(); // reset end of word
+     
+     sprintf(buf3, "key was pressed - mode: %d, readingPin1= %d, prevPin1= %d", SwitchMode, readingPin1, prevPin1);
+     Serial.println(buf3);
+ }
+ 
+ // key 1 was released
+ if (readingPin1 == HIGH && prevPin1 == LOW) {
+   prevPin1 = HIGH;
+   bsdone = 0; // allow backspace
+   msec_press1 = SW[0].elapsed();  // how long key was pressed?
+   for (i=0; i<3; i++) SW[i].stop(); // stop end of char, end of word
+   for (i=0; i<3; i++) SW[i].reset(); // stop end of char, end of word
+   SW[1].start();
+  
+  // check if dit(1) or dah(2) was pressed - push result
+  if (SwitchMode == HIGH && msec_press1 > 50 && msec_press1 < ms_do)
+      char_s.push(1);
+  else if (SwitchMode == HIGH && msec_press1 >= ms_do && msec_press1 < ms_da)
+      char_s.push(2);
+  else if (SwitchMode == LOW && msec_press1 >= 50 && msec_press1 < ms_da)
+      char_s.push(1);
+      
+   shown = 0; 
+     sprintf(buf3, "key 1 was released - msec_press1= %d", msec_press1);
+     Serial.println(buf3);
+ }
 
-          clen = char_s.push(1);
-          if (clen <= MAXDD)
-             inp_ch = show_cbuf();
-          timesPressed3 = 0;
-          timesPressed4 = 0;
-          show_labels(timesPressed3, timesPressed4); 
-        }
+   // key 2 was released
+   if (SwitchMode == LOW && readingPin2 == HIGH && prevPin2 == LOW) {
+        prevPin2 = HIGH;
+        bsdone = 0; // allow backspace
+        msec_press1 = SW[0].elapsed();  // how long key was pressed?
+        for (i=0; i<3; i++) SW[i].stop(); // stop end of char, end of word
+        for (i=0; i<3; i++) SW[i].reset(); // stop end of char, end of word
+        SW[1].start();
+       
+       if (msec_press1 > 10) 
+           char_s.push(2);
+       shown = 0; 
+   Serial.println("key 2 was released");
+   }
+  */
+
+  /*
+ // process the backspace key
+ if (msec_press1 >= ms_da && msec_press1 < ms_cl && bsdone == 0) {
+    prevPin1 = HIGH;
+    prevPin2 = HIGH;
+    outc(1, 0, 0, '\b');  // send backspace only to the Keyboard
+    tftbackspace(); // send backspace to the LCD
+    bsdone = 1; // backspace done already
+    shown = 1;
+    for (i=1; i<3; i++) { SW[i].stop(); SW[i].reset(); } // stop and reset end of char, end of word
+ }
+ 
+   // clear displey - key held > 5 sec  -- reset - don't display hello msg
+  if (msec_press1 >= ms_cl && bsdone == 0) {
+    i = helloFile(1); // create hello file - no startup message
+    delay(1000); 
+    //digitalWrite(resetPin, HIGH);
+  }
+
+   // nothing pressed for 1 sec -- end of letter
+   msec_nopress1_char = SW[1].elapsed();
+
+  */
+
+
+  if (SwitchMode == HIGH) { // one button mode
+    
+    if (btn1_evnt) { // button 1 was pressed and released
+      
+       // key press was a dot
+       if (btn1_time > 50 && btn1_time < ms_do){
+         char_s.push(1);
+       }
+         
+       // key press was a dash
+       if (btn1_time >= ms_do && btn1_time < ms_da) {
+         char_s.push(2);
+       }
+       
+       // key press was clear
+       if (btn1_time >= ms_cl) {
+         char_s.clear();
+         word_s.clear();
+         tft.fillScreen(0xFFFF);
+         tft.setCursor(0, 0);
+         tft.print("OK>");
+         SW[0].reset();
+         btn1_evnt = 0;
+         return;
+       }
+
+      // start timer for inter-character, inter-word space
+      for (i=0; i< 2; i++) {
+        SW[i].stop();     
+        SW[i].reset();
+        SW[i].start();
+      }
+      btn1_evnt = 0;
     }
   }
 
- // dah Button (#2) Pressed 
-  readingPin2 = digitalRead(inPin2);    
-  if (readingPin2 != lastButtonState2) {
-    lastDebounceTime2 = mstime;
-  }
-  if ((mstime - lastDebounceTime2) > debounceDelay) {
-    if (readingPin2 != buttonState2) {
-        buttonState2 = readingPin2;
+  btn_open_char = SW[0].elapsed();
 
-        // dah pressed
-        if (buttonState2 == LOW) {
-
-           clen = char_s.push(2);   
-           if (clen <= MAXDD)
-              inp_ch = show_cbuf();
-           timesPressed3 = 0;
-           timesPressed4 = 0;
-           show_labels(timesPressed3, timesPressed4);
-        }
-      } 
-    }
-
- // Enter Button (#3) Pressed 
-  readingPin3 = digitalRead(inPin3);    
-  if (readingPin3 != lastButtonState3) {
-    lastDebounceTime3 = mstime;
-  }
-  if ((mstime - lastDebounceTime3) > debounceDelay) {
-    if (readingPin3 != buttonState3) {
-        buttonState3 = readingPin3;
-
-        // Enter Button Pressed - display
-        if (buttonState3 == LOW) {
+  // was previous char complete?
+  if (btn_open_char >= ms_da) {
+      chr = char_s.get_charval();
+      k = mcode.getcode(chr, &inp_ch);
+             
+      // display on all devices
+      outc(1, 1, 1, inp_ch);
           
-            timesPressed4 = 0;
-            timesPressed3++;
-            if (inp_ch != -1) {  // character has been constructed
-               outc(1, 1, inp_ch);
-               if (inp_ch == '.') // speak it 
-                  speakit = 1;
-               inp_ch = -1;
-               char_s.clear();
-               clr_buf(1);      
-               clr_buf(2);
-            }
-            else if (timesPressed3 == 2) {  // buffer is empty -  insert a space
-                new_word = 1; // set new word flag
-                csize = char_s.size();
-                if (csize == 0) 
-                    outc(1, 1, ' ');
-            }
-            else if (timesPressed3 == 3) {  // enter pressed 3 times - speak
-                speaklen = word_s.get_words(speaktxt); 
-                if (speaklen) { 
-                    word_filter(1, speaktxt); 
-                    Serial1.print('S');
-                    Serial1.print(speaktxt);
-                    Serial1.print('\n'); 
-                }
-                timesPressed3 = 0; 
-            }
-            show_labels(timesPressed3, timesPressed4); 
-         }
-      }
-   }
-
-  // Delete Button (#4) Pressed 
-  readingPin4 = digitalRead(inPin4);    
-  if (readingPin4 != lastButtonState4) {
-    lastDebounceTime4 = mstime;
+      // clean up - get ready for next letter
+      char_s.clear();
+      SW[0].stop();     
+      SW[0].reset();
+      
   }
-  if ((mstime - lastDebounceTime4) > debounceDelay) {
-    if (readingPin4 != buttonState4) {
-        buttonState4 = readingPin4;
 
-        // Enter Button Pressed - display
-        if (buttonState4 == LOW) {
-          
-            timesPressed3 = 0;
-            timesPressed4++;
-            csize = char_s.size();
-            if (csize > 0) {  // character has been constructed
-               inp_ch = -1;
-               char_s.clear();
-               clr_buf(3);      
-            }
-            else if (timesPressed4 == 2) {  // del pressed twice - backspace
-                backspace();
-            }
-            else if (timesPressed4 == 3) {  // del pressed 3 times - clear screen
-                cls();
-                timesPressed4 = 0;               
-            }
-            show_labels(timesPressed3, timesPressed4); 
-         }
-      }
-   }
+  btn_open_word = SW[1].elapsed();
+
+  // was previous word complete
+  if (btn_open_word >= ms_lt && !wordShown) {
+       
+      SW[1].stop();     
+      SW[1].reset();
+      wordShown = 1;  
 
      // get previous word entered -- was it a short code? OR was it a parameter code?
-    if (new_word) {
-       word_s.get_pword(pword);
-       p_pword = pword + 1;
-       pos_op = strpos(p_pword, eqop, 2);
- 
-       // save pointer
-       word_s.save_ptr(-1);
+     word_s.get_pword(pword);
 
-       // was this a short code? If so, display message
-       if (pword[0] == ':' && strlen(pword) > 1) {
-          lenmesg = scode.getcode(p_pword, smesg);
-          if (lenmesg > 0)
-             outstr(1, 1, smesg);
-       }
-       // List function - list current values of parms
-       else if (!strcmp(pword, "/L"))
-          listparm();
-          
-       // show Voice Parm
-       else if (!strcmp(pword, "/VC")) 
-          show_parm(0);
+     // output space 
+     outc(1, 1, 1, ' ');
 
-       // delete user parm file
-       else if (!strcmp(pword, "/D")) 
-          delparm();
-          
-       else if (pword[0] == '/' && strlen(pword) > 1 && pos_op != -1){
-          j = chk_parm(p_pword, &parm_val, &parm_new, parm);
-          if (j) {
-              sprintf(buf, " ERR10%d ", j); 
-              outstr(1, 1, buf); 
-          }
-          else 
-              j1 = update_parm_code(parm, parm_new);
-              if (j1 == 4)
-                  outstr(1, 1, " ERR104 ");
-       }
-    }          
-    if (speakit) {
-       speaklen = word_s.get_words(speaktxt);
-       if (speaklen) {
-         word_filter(2, speaktxt); 
-         Serial1.print('S');
-         Serial1.print(speaktxt);
-         Serial1.print('\n'); 
-       }
-       speakit = 0; 
+     // previous word without a leading character (like the /). 
+     p_pword = pword + 1;
+     
+     // position of = operator, if any
+     pos_op = strpos(p_pword, eqop, 2);
+     
+     // List function - list current values of parms
+     if (!strcmp(pword, "/L")) 
+        listparm();
+        
+     // was this a short code? If so, display message
+     else if (pword[0] == ':' && strlen(pword) > 1) {
+        lenmesg = scode.getcode(p_pword, smesg);
+        if (lenmesg > 0) {
+           Serial.println(smesg); 
+           tft.print(smesg); 
+           word_s.push_words(smesg);  // push message onto words stack
+        }
+     }
+  }
+
+/*
+  
+     // check if dit(1) or dah(2) was pressed - push result
+     if (SwitchMode == HIGH && btn1_time > 50 && btn1_time < ms_do)
+        char_s.push(1);
+    else if (SwitchMode == HIGH && btn1_time >= ms_do && btn1_time < ms_da)
+        char_s.push(2);
+    else if (SwitchMode == LOW && btn1_time >= 50 && btn1_time < ms_da)
+        char_s.push(1);
+
+    // lookup the character last pressed
+    if (btn1_time >= ms_da && btn1_time < ms_lt && shown == 0 && bsdone == 0) {
+      int chr = char_s.get_charval();
+      int i1 = mcode.getcode(chr, &inp_ch);
+
+      // display on lcd
+      tft_display(inp_ch); 
+    
+      // display on all devices but LCD
+      outc(1, 0, 1, inp_ch);
+
+      // clean up - get ready for next letter
+      char_s.clear();
+      shown = 1;
+      //SW[1].stop();  // stop the timer to form a character
+      //SW[1].reset();
+      //SW[2].start(); // start the timer to form a word
     }
-    lastButtonState1 = readingPin1;
-    lastButtonState2 = readingPin2;
-    lastButtonState3 = readingPin3;
-    lastButtonState4 = readingPin4;
+    
+    // clear the button 1 flag
+    btn1_evnt = 0;
+  }
+  
+
+   // nothing pressed for more than 1 sec -- end of word
+   msec_nopress1_char = SW[2].elapsed();
+
+  if (msec_nopress1_char >= ms_lt && wordShown == 0) {
+     wordShown = 1;
+     outc(1, 0, 1, ' ');
+     SW[2].stop();
+     SW[2].reset();
+
+
+     // get previous word entered -- was it a short code? OR was it a parameter code?
+     word_s.get_pword(pword);
+     
+     // save ptr to make it easy to find previous word
+     word_s.save_ptr(0);  // don't use this! done in push now.
+     
+     // push a space onto word stack
+     word_s.nextword();
+
+     // pointer to previous word without the slash
+     p_pword = pword + 1;
+     
+     // position of = operator, if any
+     pos_op = strpos(p_pword, eqop, 2);
+
+     // List function - list current values of parms
+     if (!strcmp(pword, "/L")) 
+        listparm();
+
+     // undo current parm on stack
+     else if (!strcmp(pword, "/U")) 
+        undoparm();
+
+     // undo current parm on stack
+     else if (!strcmp(pword, "/D")) 
+        delparm();
+
+    // was this a short code? If so, display message
+    else if (pword[0] == ':' && strlen(pword) > 1) {
+        p = pword + (char) 1;
+        int lenmesg = scode.getcode(p, smesg);
+        if (lenmesg > 0) {
+          for (int j = 0; j < lenmesg; j++)
+            outc(1, 0, 1, smesg[j]);
+          word_s.push_words(smesg);  // push message onto words stack
+          tft_display(0);     // display 
+        }
+    }
+    // parameter code lookup only - display value
+    else if (pword[0] == '/' && strlen(pword) > 1 && pos_op < 0) {
+        parm_val = get_parm_code(p_pword, &pval);
+        if (parm_val > -1) {
+          sprintf(pval_str, "%d", pval);
+          pval_len = strlen(pval_str);
+          for (int j = 0; j < pval_len; j++)
+            outc(1, 0, 1, pval_str[j]);
+          word_s.push_words(pval_str);  // push message onto words stack
+          tft_display(0);     // display 
+        }
+    }
+    else if (pword[0] == '/' && strlen(pword) > 1 && pos_op != -1){
+          j = chk_parm(p_pword, &parm_val, &parm_new, parm);
+          if (j == -1) 
+              word_s.push_words("ERR101");  // push message onto words stack
+          else if (j == -2) 
+              word_s.push_words("ERR102"); 
+          else if (j == -3) 
+              word_s.push_words("ERR103"); 
+          else if (j == -6) 
+              word_s.push_words("ERR106"); 
+          if (j < 0) 
+              tft_display(0);     // display 
+          if (!j) {  // no error, update param and user file
+              int j1 = update_parm_code(parm, parm_new);
+              if (j1 == -4) {
+                  word_s.push_words("ERR104");  // push message onto words stack
+                  tft_display(0);     // display 
+              }
+              else if (j1 == -5) {
+                  word_s.push_words("ERR105");  // push message onto words stack
+                  tft_display(0);     // display 
+              }
+              else {
+                  word_s.push_words("OK");  // push message onto words stack
+                  tft_display(0);     // display 
+              }   
+          }
+       } 
+   }
+   */
 }
 
 ////////////////////////// End of Loop ///////////////////////////////////////////
@@ -438,7 +567,7 @@ void ReadDataFile(char *fn) {
       // remove newline
       if ((p=strchr(str, '\n')) != NULL)
         *p = '\0';
-  
+      
       switch(str[0]) {
         case 'm':
           mcode.loadcode(str);  // load the morse code
@@ -474,283 +603,214 @@ void ReadParmFile(char *fn) {
   }
 }
 
-// show labels below char buffer
-void show_labels(int Lab3, int Lab4) {
-  int r, c;
+//
+// controls hello message for normal startup vs reset
+// return 0 -- no hello file -- for normal startup with Hello Message
+// return 1 -- file present - use for no hello on reset
+// mode 2 read file and return above codes
+// mode 1 create file with short message
+// mode 0 delete file
+int helloFile(int mode) {
+
+  int rc, j;
+  File dataFile;
+  char buf[100];
+  char buf1[300];
   
-    // clear label line
-    setcursor(1, -1, 2, 7, &c, &r);
-    tft.fillRect(c, r, 320, 25, ILI9341_WHITE);
-    tft.setTextSize(2);
-
-    switch (Lab3) { 
-        case 0:
-           if (inp_ch == -1)
-              tft.setTextColor(0xEEEE);  
-           tft.println("<Enter>");
-           break;
-        case 1:
-           tft.println("<Space>");
-           break;
-        case 2:
-           tft.println("<Say It>");
-           break; 
-    }
-    setcursor(1, -1, 10, 7, &c, &r);  
-    tft.setTextColor(ILI9341_BLACK);  
-
-    switch (Lab4) { 
-        case 0:
-           if (char_s.size() < 1)
-              tft.setTextColor(0xEEEE);  
-           tft.println("<Delete>");
-           break;
-        case 1:
-           tft.println("<Backspace>");
-           break;
-        case 2:
-           tft.println("<Clear>");
-           break; 
-    } 
-    tft.setTextColor(ILI9341_BLACK);  
-    tft.setTextSize(pr_fn);  // restore font size
-}
-
-// show what's in the char buffer on the bottom line
-int show_cbuf(){
-  long cval;
-  char buf[MAXDD+1], buf1[MAXDD+1], buf2[25], inp_ch, ch1[2];
-  int n, i, k, rc, r, c; 
-  int ch[MAXDD+1]; 
-
-  cval = char_s.get_charval(n, ch); 
-  k = mcode.getcode(cval, &inp_ch);
- 
-  memset(buf, 0, MAXDD+1);
-  for (i = 0; i < n; i++) {
-      ch1[0] = ch1[1] = 0;
-      if (ch[i] == 1)
-        ch1[0] = 219; // dot
-      else if (ch[i] == 2)
-        ch1[0] = 195;  // dash
-      else
-        ch1[0] = ' ';
-      
-      strcat(buf, ch1); 
-  }
-  setcursor(1, -1, 3, 6, &c, &r);
-  tft.println(buf);
-  if (k > -1) {
-    
-     // clear the right side
-     clr_buf(2);      
-
-     // write the new char
-     tft.setTextColor(ILI9341_BLACK);  
-     sprintf(buf1, "%c", inp_ch);
-     setcursor(1, -1, 11, 6, &c, &r);
-     tft.println(buf1);
-     rc = inp_ch; 
-  }
-  else { // char not found - clear space
-      clr_buf(2);
-      rc = -1;      
-  }
-  return rc; 
-}
-
-// clear the screen and buffers
-void cls() {
-     word_s.clear();
-     char_s.clear();
-     tft.fillScreen(0xFFFF);
-     outstr(1, 2, "OK>");
-     word_s.save_ptr(-1);
-}
-
-// clear buffer area - side=1 left, side=2 right, both=3
-void clr_buf(int side) {
-    int r, c;
-    
-    if (side == 1) { // left
-        setcursor(1, -1, 0, 6, &c, &r);  
-        tft.fillRect(c, r, 199, 25, ILI9341_WHITE);
-    } 
-    else if (side == 2) { // right
-        setcursor(1, -1, 11, 6, &c, &r);  
-        tft.fillRect(c, r, 30, 50, ILI9341_WHITE); 
-    }
-    else {
-        setcursor(1, -1, 0, 6, &c, &r);  
-        tft.fillRect(c, r, 320, 25, ILI9341_WHITE); 
-    }    
-}
-
-// output a string to the tft
-
-void outstr(int lc, int ser, char *str) {
-    int i, j, len;
-    char c; 
-    
-    len = strlen(str);
-    for (i=0; i < len; i++) {
-         c = str[i];
-         outc(1, 1, c);     
-    }
-}
-
-// backspace on the tft -
-// -1 flags to erase last character and pop the stack
-void backspace() {
-    outc(1, 1, -1);   
-}
+  memset(buf, 0, 100);
   
+  // delete file
+  if (mode == 0) {
+    SD.remove(HELLO_FILE);
+    rc = -1;
+  }
+  else if (mode == 1) { 
+    SD.remove(HELLO_FILE);
+    dataFile = SD.open(HELLO_FILE, FILE_WRITE);
+    dataFile.print(F("Hello, World!"));
+    dataFile.close();
+    rc = -1;
+  }
+  else if (mode == 2) {
+    dataFile = SD.open(HELLO_FILE);
+    if (dataFile) {
+       //j = (int)dataFile.size();
+       j = 5;
+       dataFile.read(buf, (uint16_t)j);
+       dataFile.close();
+       rc = 1; // file present
+    }
+    else
+      rc = 0; // no file, normal startup with message
+  }
+  return rc;
+} 
+
 // output to Keyboard, LCD or Serial Terminal
-void outc(int lc, int ser, char c) {
+void outc(int kb, int lc, int ser, char c) {
+  //if (kb) Keyboard.print(c);
   if (lc) tft_display(c);  
   if (ser) Serial.print(c);
 }
 
-// send output to the tft
-// c is the character to display
-// if c == -1, backspace
-// manage the cursor underscore _ that leads the text
-void tft_display(char chr) {
-  int i, i1, j, nr, lenw, lenbuf, ptr;
-  int col, row, c, r;
-  static int cursor_c, cursor_r;
-  char ch, c1[3], buf[20]; 
+// send backspace to the LCD
+// this is done by clearing the last character,
+// clearing the LCD and resending the data
+void tftbackspace() {
+  word_s.pop(); // - pop the last entered character from the word stack
+  tft_display(0);  // update the lcd
+}
+
+
+// send output to the lcd
+// if output is approaching screen size, 
+// cut off some of the beginning
+//
+void tft_display(char c) {
+  static char buf[MAXCHAR];
+  char buf1[NROW][NCOL];
+  char *p;
+  int i, i1, j, nr, lenw, lenbuf;
+
+  for (i = 0; i < NROW; i++)
+      memset(buf1[i], 0, NCOL); 
+     
+  memset(buf, 0, MAXCHAR);
   
-  // setup pointer to cursor position
-  ptr = word_s.get_ptr(0);
-    
   // if char input, push to word stack
-  if (chr > 0) { 
-    ptr = word_s.push(chr);
-
-    if (ptr < MAXWORD_TXT-1) {
-      setcursor(1, -1, -1, -1, &cursor_c, &cursor_r);
-      tft.setTextColor(ILI9341_WHITE);  
-      tft.print("_");
-    
-      tft.setTextColor(ILI9341_BLACK);  
-      setcursor(1, ptr, 0, 0, &c, &r);
-      tft.print(chr);
-      setcursor(1, ptr+1, 0, 0, &cursor_c, &cursor_r);
-      tft.print("_");
-    }
-  }
-  else { // backspace
-     setcursor(1, -1, -1, -1, &cursor_c, &cursor_r);
-     tft.setTextColor(ILI9341_WHITE);  
-     tft.print("_");
-
-     i = word_s.pop();
-     ptr = word_s.get_ptr(0);
-     setcursor(1, ptr+1, 0, 0, &c, &r);   
-     tft.fillRect(c, r, 50, 25, ILI9341_WHITE);
-
-     setcursor(1, ptr+1, 0, 0, &cursor_c, &cursor_r);
-     tft.setTextColor(ILI9341_BLACK);  
-     tft.print("_");
+  if (c > 0) { 
+    word_s.push(c);
+    tft.print(c); 
+    return;
   }
   
-  return;
+  // arg = 0, display the buffer 
+   
+  word_s.get_words(buf);
+  lenbuf = strlen(buf);
+
+  // message is getting too long to fit - cut off beginning
+  if (lenbuf > (MAXCHAR - 20))
+     word_s.trim_words(); 
+ 
+  // format LCD Screen with NCOL and NROW dimensions
+  p = strtok(buf, " ");
+  nr = 0; 
+  while (p) {
+     lenw = strlen(p);
+     lenbuf = strlen(buf1[nr]);
+     if ((lenbuf + lenw) > NCOL - 2 and nr < NROW) 
+         nr++;
+         
+     if (lenbuf == 0)
+         strcpy(buf1[nr], p); 
+     else
+         strcat(buf1[nr], p);
+     strcat(buf1[nr], " "); 
+     p = strtok(NULL, " ");  
+  }
+  
+  nr = lenbuf = -1; 
+  for (i = 0; i < NROW; i++) {
+      tft.setCursor(0, i*20);   // column, row order
+      tft.print(buf1[i]);
+      j = strlen(buf1[i]);
+      if (j) {
+          lenbuf = j;
+          nr = i;
+      }
+  }
+  tft.setCursor(lenbuf-1, nr); 
 }
 
-// set the tft cursor in the position needed
-// if pos is provided, placement is relative to 0, 0 with wrapping as each line is filled
-// if row/col provided, placement is absolute
-// -1 in pos indicates that row/col placement to be used
-// -1 in row indicates that tftcol and tftrow be used for placement
-// mode - 0 do nothing but return values in tftcol and tftrow. non-zero move cursor and return values
-void setcursor(short mode, int pos, int col, int row, int *tftcol, int *tftrow) {
-static short charSizeC=17;
-static short charSizeR=30;
-short pos1, r, c;
-char buf5[50];
-
-    if (pos != -1) {  // based on pointer - lines can overflow
-       pos1 = pos -1; // subtract one to make zero based
-       if (pos1 < NCOL) {
-            *tftrow = 0;
-            *tftcol = pos1 * charSizeC;
-        }
-        else {
-            r = (short) pos1 / NCOL; 
-            *tftrow = charSizeR * r;
-            *tftcol = charSizeC * (pos1 - (r * NCOL)); 
-        }
-    }
-    else if (row != -1) {
-       *tftrow = charSizeR * row;
-       *tftcol = charSizeC * col;
-    }
-    if (mode)
-      tft.setCursor(*tftcol, *tftrow); 
-}
-
-
-void userparms() {
+void setup_timing() {
   int rc;
-  int v[NPARMS];
+  unsigned v[4];
   char buf[100];
   
   // lookup code file - override defaults if found
+  rc = pcode.getcode_pop(-2, v);
 
-  rc = pcode.getcode(v);
-
-  // only voice code parm is being used
-  pr_vc = v[0];
+  ms_do = v[0];
+  ms_da = v[1];
+  ms_lt = v[2];
+  ms_cl = v[3];
 }
 
 // lookup current value of parm code
-int get_parm_code(char *p, int *v) {
+int get_parm_code(char *p, unsigned *v) {
   
   int rc = -1;
   
-  if (!strcmp(p, "VC"))
-    rc = *v = pr_vc;    
+  if (!strcmp(p, "DO"))
+    rc = ms_do;
+  else if (!strcmp(p, "DA"))
+    rc = ms_da;
+  else if (!strcmp(p, "LI"))
+    rc = ms_lt;
+  else if (!strcmp(p, "CL"))
+    rc = ms_cl;
   
+  *v = rc;
   return rc;
 }
 
 // update current value of parm code
-int update_parm_code(char *p, int val) {
-  int v[NPARMS];
+int update_parm_code(char *p, unsigned val) {
+  unsigned v[4];
   int rc = 0;
-     
-  // new value for voice (0 - 8)
-  pr_vc = val;  
-  v[0] = pr_vc;
-  pcode.putcode(v);
-  rc = updateUserParmFile();
-  setvoice(pr_vc);
-
+    
+  // update value 
+  if (!strcmp(p, "DO"))
+    ms_do = val;
+  else if (!strcmp(p, "DA"))
+    ms_da = val;
+  else if (!strcmp(p, "LI"))
+    ms_lt = val;
+  else if (!strcmp(p, "CL"))
+    ms_cl = val;
+  else
+    rc = -4; 
+  
+  // push new value on stack
+  if (!rc) {
+    v[0] = ms_do;
+    v[1] = ms_da;
+    v[2] = ms_lt;
+    v[3] = ms_cl;
+    pcode.push(v);
+    rc = updateUserParmFile();
+  }
+  
   return rc;
 }  
 
 // update user parm file
 int updateUserParmFile() {
-  int rc = 0, i, j;
-  int v[NPARMS];
+  int rc = 0, cnt, i, j;
+  unsigned v[4];
   char buf[BUFPCODE];
-  
-    if (SD.exists(USR_PARM))
-        SD.remove(USR_PARM); // delete file in case it exists
-    delay(300);
-    File dataFile = SD.open(USR_PARM, FILE_WRITE);
+  char buf1[40];
 
-    if (dataFile) {
-        pcode.getcode(v); // get next element of stack
-        sprintf(buf, "%d,\n", v[0]);
-        dataFile.print(buf);
-        dataFile.flush();
-        dataFile.close();
-        rc = 0; 
-    }
-    else
-      rc = 4;        
+    memset(buf, 0, BUFPCODE);
+
+    cnt = pcode.getcode_pop(-2, v); // get cnt - size of stack
+    
+    memset(buf, 0, BUFPCODE);
+    SD.remove(USR_PARM); // delete file in case it exists
+    delay(300);
+    File dataFile = SD.open(USR_PARM, FILE_WRITE); 
+      if (dataFile) {
+         for (i=0; i < cnt; i++) {
+            j = pcode.getcode_pop(i, v); // get next element of stack
+            sprintf(buf1, "%d,%d,%d,%d\n", v[0], v[1], v[2], v[3]);
+            strcat(buf, buf1);
+         }
+         dataFile.print(buf);
+         dataFile.close();
+      }
+      else
+        rc = -5;
  
   return rc;
 }
@@ -776,58 +836,17 @@ int strpos(char *hay, int need, int offset) {
     return rc;
 }
 
-// filter text
-// filter 1 - find "OK>" and delete it
-void word_filter(int mode, char *txt) {
-    char *p, *p2;
-    char txt1[MAXWORD_TXT]; 
-    char txt2[MAXWORD_TXT]; 
-    char buf[100]; 
-    int period[10]; 
-    int nperiod = 0; 
-    int i, len; 
-    
-    for (i=0; i < 10; i++) period[i] = 0; 
-    nperiod - -1;    
-    memset(txt1, 0, MAXWORD_TXT);
-    memset(txt2, 0, MAXWORD_TXT);
-    strcpy(txt1, txt); 
-    p = txt1;
-    len = strlen(txt1); 
-
-    // say text since the last period
-    if (mode == 2) {
-        for (i = 0; i < len; i++) {
-            if (txt1[i] == '.') {
-                 period[nperiod] = i;
-                 nperiod++; 
-            }       
-        }
-        if (nperiod > 1)
-            p += period[nperiod -2] + 1;
-    }
-
-   strcpy(txt2, p); 
-    p2 = txt2;
-    
-    if (!strncmp(txt2, "OK>", 3))
-        p2 += 3; 
-
-    strcpy(txt, p2);    
-}
-
 // check input parm - is it valid?
-// return 0 OK 
-// return 1 parm not found
-// return 2 parm not numeric
-// return 3 range error
-// return 4 file error
+// return -1 if non-numeric value is found
+// return -2 if value is out of range
+// return -3 if value is changed too much
+// return value if OK
 int chk_parm(char *p_pword, int *Parm_val, int *Parm_new, char *parm){
     char buf[40];
     char val[20];
     char *p;
     int i, i1, j, rc;
-    int prev_val, ival, ival_upper, ival_lower;
+    unsigned prev_val, ival, ival_upper, ival_lower;
     
     rc = 0;
     *Parm_new = 0;
@@ -840,21 +859,30 @@ int chk_parm(char *p_pword, int *Parm_val, int *Parm_new, char *parm){
         
     j = strlen(val);
     if (!j)
-      rc = 1;
+      rc = -6;
       
     for (i = 0, i1=0; i< j; i++) {
         if (isdigit(val[i]));
           i1++;
     }
     if (!rc && i1 != j)
-      rc = 2;
-
-    ival = atol(val); 
+      rc = -1;
     
-    // first check Voice and Font Parameters
-    if (!(strcmp(parm, "VC")) && (ival < 0 || ival > 8))
-       rc = 3;    
+    //range check
+    if (!rc) {
+        ival = atol(val); 
+        if (ival < 20 || ival > 10000)
+           rc = -2; 
+    }
  
+    // delta check
+    if (!rc) {
+      ival_upper = prev_val * 1.10;
+      ival_lower = prev_val * .90; 
+      if (ival < ival_lower || ival > ival_upper)
+          rc = -3;
+    }
+    
     if (!rc)
       *Parm_new = ival;
     else
@@ -864,47 +892,57 @@ int chk_parm(char *p_pword, int *Parm_val, int *Parm_new, char *parm){
 }
 
 // /L function
-// show current values of parms 
+// show current values of timing parms 
 int listparm(){
-  int v[NPARMS];
-  char buf[20];
+  unsigned v[4];
+  char buf0[NCOL];
+  char buf1[NCOL];
   int i;
   
-  i = pcode.getcode(v);
-  sprintf(buf, "Voice: %d ", v[0]);
-  outstr(1, 1, buf); 
-  
-  sprintf(buf, "Voice: %d, i=%d ", v[0], i);  
-  Serial.println(buf); 
+  i = pcode.getcode_pop(-2, v);
+  sprintf(buf0, "DOT:%d DASH:%d", v[0], v[1]);
+  sprintf(buf1, "LTR:%d CLS: %d", v[2], v[3]);
+
+  tft.fillScreen(0xFFFF);
+  tft.setCursor(0, 0);
+  tft.print(buf0);
+  tft.setCursor(0, 20);
+  tft.print(buf1);
 }
 
-// show current values of Voice or Font Parm
-int show_parm(int n){
-  int v[NPARMS];
-  char buf[20];
-  char buf0[25];
+// /U function
+// undo last parm entered from top of stack
+int undoparm(){
   int i;
-
-  if (n == 0)
-      strcpy(buf, "Voice:"); 
-
-  // lookup parms - get voice
-  i = pcode.getcode(v);  
-  sprintf(buf0, "%s %d ", buf, v[n]);
-  outstr(1, 1, buf0); 
-
-  sprintf(buf, "Voice: %d, i=%d ", v[0], i);  
-  Serial.println(buf); 
+  unsigned v[4];
+  char buf[50];
+  
+  i = pcode.getcode_pop(-1, v);
+  
+  if (i > 0) { // stack has something on it, save it
+    updateUserParmFile();
+    word_s.push_words("OK");  // push message onto words stack
+    tft_display(0);     // display 
+  }
+  else if (i == 0) { // stack is empty - delete user file
+    SD.remove(USR_PARM); // delete file if nothing on stack
+    delay(250); 
+    i = helloFile(1); // create hello file - no startup message
+    delay(250); 
+    digitalWrite(resetPin, LOW);
+  }
 }
 
 // /D function
 //  delete user parm file
-int delparm(){ 
-  
-  if (SD.exists(USR_PARM))
-    SD.remove(USR_PARM); // delete file if nothing on stack
-
-  outstr(1, 1, " OK "); 
+int delparm(){
+  int i;
+ 
+  SD.remove(USR_PARM); // delete file if nothing on stack
+  delay(250); 
+  i = helloFile(1); // create hello file - no startup message
+  delay(250); 
+  digitalWrite(resetPin, LOW);
 }
 
 // SD Card fgets 
@@ -922,140 +960,43 @@ char *SD_fgets(char *str, int sz, File fp)
    return (ch == EOF && buf == str) ? NULL : str;
 }
 
-void setvoice(int v) {
-   char buf[20]; 
-   
-   sprintf(buf, "N%d\n", v);
-   Serial1.print(buf); 
-   Serial1.flush();
-}
-
-void bmpDraw(char *filename, uint8_t x, uint16_t y) {
-  File     bmpFile;
-  int      bmpWidth, bmpHeight;   // W+H in pixels
-  uint8_t  bmpDepth;              // Bit depth (currently must be 24)
-  uint32_t bmpImageoffset;        // Start of image data in file
-  uint32_t rowSize;               // Not always = bmpWidth; may have padding
-  uint8_t  sdbuffer[3*BUFFPIXEL]; // pixel buffer (R+G+B per pixel)
-  uint8_t  buffidx = sizeof(sdbuffer); // Current position in sdbuffer
-  boolean  goodBmp = false;       // Set to true on valid header parse
-  boolean  flip    = true;        // BMP is stored bottom-to-top
-  int      w, h, row, col;
-  uint8_t  r, g, b;
-  uint32_t pos = 0, startTime = millis();
-
-  if((x >= tft.width()) || (y >= tft.height())) return;
-
-  Serial.println();
-  Serial.print(F("Loading image '"));
-  Serial.print(filename);
-  Serial.println('\'');
-
-  // Open requested file on SD card
-  if ((bmpFile = SD.open(filename)) == NULL) {
-    Serial.print(F("File not found"));
-    return;
-  }
-
-  // Parse BMP header
-  if(read16(bmpFile) == 0x4D42) { // BMP signature
-    Serial.print(F("File size: ")); Serial.println(read32(bmpFile));
-    (void)read32(bmpFile); // Read & ignore creator bytes
-    bmpImageoffset = read32(bmpFile); // Start of image data
-    Serial.print(F("Image Offset: ")); Serial.println(bmpImageoffset, DEC);
-    // Read DIB header
-    Serial.print(F("Header size: ")); Serial.println(read32(bmpFile));
-    bmpWidth  = read32(bmpFile);
-    bmpHeight = read32(bmpFile);
-    if(read16(bmpFile) == 1) { // # planes -- must be '1'
-      bmpDepth = read16(bmpFile); // bits per pixel
-      Serial.print(F("Bit Depth: ")); Serial.println(bmpDepth);
-      if((bmpDepth == 24) && (read32(bmpFile) == 0)) { // 0 = uncompressed
-
-        goodBmp = true; // Supported BMP format -- proceed!
-        Serial.print(F("Image size: "));
-        Serial.print(bmpWidth);
-        Serial.print('x');
-        Serial.println(bmpHeight);
-
-        // BMP rows are padded (if needed) to 4-byte boundary
-        rowSize = (bmpWidth * 3 + 3) & ~3;
-
-        // If bmpHeight is negative, image is in top-down order.
-        // This is not canon but has been observed in the wild.
-        if(bmpHeight < 0) {
-          bmpHeight = -bmpHeight;
-          flip      = false;
-        }
-
-        // Crop area to be loaded
-        w = bmpWidth;
-        h = bmpHeight;
-        if((x+w-1) >= tft.width())  w = tft.width()  - x;
-        if((y+h-1) >= tft.height()) h = tft.height() - y;
-
-        // Set TFT address window to clipped image bounds
-        tft.setAddrWindow(x, y, x+w-1, y+h-1);
-
-        for (row=0; row<h; row++) { // For each scanline...
-
-          // Seek to start of scan line.  It might seem labor-
-          // intensive to be doing this on every line, but this
-          // method covers a lot of gritty details like cropping
-          // and scanline padding.  Also, the seek only takes
-          // place if the file position actually needs to change
-          // (avoids a lot of cluster math in SD library).
-          if(flip) // Bitmap is stored bottom-to-top order (normal BMP)
-            pos = bmpImageoffset + (bmpHeight - 1 - row) * rowSize;
-          else     // Bitmap is stored top-to-bottom
-            pos = bmpImageoffset + row * rowSize;
-          if(bmpFile.position() != pos) { // Need seek?
-            bmpFile.seek(pos);
-            buffidx = sizeof(sdbuffer); // Force buffer reload
-          }
-
-          for (col=0; col<w; col++) { // For each pixel...
-            // Time to read more pixel data?
-            if (buffidx >= sizeof(sdbuffer)) { // Indeed
-              bmpFile.read(sdbuffer, sizeof(sdbuffer));
-              buffidx = 0; // Set index to beginning
-            }
-
-            // Convert pixel from BMP to TFT format, push to display
-            b = sdbuffer[buffidx++];
-            g = sdbuffer[buffidx++];
-            r = sdbuffer[buffidx++];
-            tft.pushColor(tft.color565(r,g,b));
-          } // end pixel
-        } // end scanline
-        Serial.print(F("Loaded in "));
-        Serial.print(millis() - startTime);
-        Serial.println(" ms");
-      } // end goodBmp
+// button 1 closed or open
+void ckbtn1() {
+    static long lastDebounceTime;
+    static long btn_closed;
+  
+    if ((millis() - lastDebounceTime) > DEBOUNCEDELAY) {
+    
+      if (btn1_state == HIGH) { // was open, has been pressed
+          btn_closed = millis();
+          btn1_state = LOW;
+      }
+      else { // was closed, has been released
+          btn1_time = millis() - btn_closed;
+          btn1_evnt = 1;  // btn released - time held in btn_time 
+          btn1_state = HIGH;
+      }
     }
-  }
-
-  bmpFile.close();
-  if(!goodBmp) Serial.println(F("BMP format not recognized."));
+    lastDebounceTime = millis();
 }
 
-// These read 16- and 32-bit types from the SD card file.
-// BMP data is stored little-endian, Arduino is little-endian too.
-// May need to reverse subscript order if porting elsewhere.
-
-uint16_t read16(File &f) {
-  uint16_t result;
-  ((uint8_t *)&result)[0] = f.read(); // LSB
-  ((uint8_t *)&result)[1] = f.read(); // MSB
-  return result;
-}
-
-uint32_t read32(File &f) {
-  uint32_t result;
-  ((uint8_t *)&result)[0] = f.read(); // LSB
-  ((uint8_t *)&result)[1] = f.read();
-  ((uint8_t *)&result)[2] = f.read();
-  ((uint8_t *)&result)[3] = f.read(); // MSB
-  return result;
+// button 2 closed or open
+void ckbtn2() {
+    static long lastDebounceTime;
+    static long btn_closed;
+  
+    if ((millis() - lastDebounceTime) > DEBOUNCEDELAY) {
+    
+      if (btn2_state == HIGH) { // was open, has been pressed
+          btn_closed = millis();
+          btn2_state = LOW;
+      }
+      else { // was closed, has been released
+          btn2_time = millis() - btn_closed;
+          btn2_evnt = 1;  // btn released - time held in btn_time 
+          btn2_state = HIGH;
+      }
+    }      
+    lastDebounceTime = millis();
 }
 
